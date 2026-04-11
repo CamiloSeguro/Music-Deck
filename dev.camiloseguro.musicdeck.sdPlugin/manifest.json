@@ -1,0 +1,56 @@
+{
+  "SDKVersion": 1,
+  "Name": "Music Deck",
+  "Version": "1.0.0",
+  "Author": "Camilo Seguro",
+  "Description": "Canción actual con letras sincronizadas y visualizador. Apple Music, Spotify, Chrome y cualquier app SMTC.",
+  "Category": "Music Deck",
+  "CategoryIcon": "imgs/category",
+  "Icon": "imgs/plugin",
+  "CodePathWin": "bin/plugin.js",
+  "CodePathMac": "bin/plugin.js",
+  "Actions": [
+    {
+      "Name": "Now Playing",
+      "UUID": "dev.camiloseguro.musicdeck.nowplaying",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Muestra portada, título, artista y letras en tiempo real. Arrástralo a la pantalla touch.",
+      "Controllers": [],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
+    },
+    {
+      "Name": "Play / Pause",
+      "UUID": "dev.camiloseguro.musicdeck.playpause",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Reproduce o pausa la canción actual",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": true
+    },
+    {
+      "Name": "Next Track",
+      "UUID": "dev.camiloseguro.musicdeck.next",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Salta a la siguiente canción",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": true
+    },
+    {
+      "Name": "Previous Track",
+      "UUID": "dev.camiloseguro.musicdeck.previous",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Vuelve a la canción anterior",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": true
+    }
+  ],
+  "OS": [
+    { "Platform": "windows", "MinimumVersion": "10" },
+    { "Platform": "mac",     "MinimumVersion": "10.14" }
+  ],
+  "Software": { "MinimumVersion": "3.10.188.226" },
+  "Nodejs": { "Version": "20", "Debug": "--inspect=127.0.0.1:9765" }
+}

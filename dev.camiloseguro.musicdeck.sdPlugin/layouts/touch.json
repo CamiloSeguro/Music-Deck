@@ -1,0 +1,11 @@
+{
+  "id": "music-deck-touch",
+  "elements": [
+    {
+      "key": "image",
+      "type": "pixmap",
+      "rect": [0, 0, 200, 100],
+      "zOrder": 0
+    }
+  ]
+}

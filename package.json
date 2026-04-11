@@ -1,0 +1,20 @@
+{
+  "name": "music-deck",
+  "version": "1.0.0",
+  "private": true,
+  "description": "StreamDock plugin: Now playing con letras y visualizador. Apple Music + SMTC.",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "setup": "npm install && cd dev.camiloseguro.musicdeck.sdPlugin && npm install"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^0.1.97",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

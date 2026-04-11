@@ -1,0 +1,9 @@
+{
+  "name": "music-deck-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "ws": "^8.18.0",
+    "@napi-rs/canvas": "^0.1.53"
+  }
+}

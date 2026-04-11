@@ -1,0 +1,5 @@
+node_modules/
+dev.camiloseguro.musicdeck.sdPlugin/node_modules/
+dev.camiloseguro.musicdeck.sdPlugin/bin/
+*.js.map
+*.d.ts
