@@ -13,8 +13,12 @@
 
 import { spawn, execFile, type ChildProcess } from 'child_process';
 import { join, dirname } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, appendFileSync } from 'fs';
 import type { MediaInfo, ControlAction } from '../types';
+
+function smtcLog(msg: string): void {
+  try { appendFileSync(join(__dirname, '..', '..', 'debug.log'), `[${new Date().toISOString()}] [SMTC] ${msg}\n`); } catch { /* noop */ }
+}
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
@@ -95,18 +99,20 @@ async function launchLoop(): Promise<void> {
   if (stopped) return;
 
   let exePath = findExe();
+  smtcLog(`launchLoop exePath=${exePath ?? 'null'}`);
 
   if (!exePath) {
     try {
       await buildExe();
       exePath = findExe();
     } catch {
-      console.error('[SMTC] No se pudo compilar SmtcNative.exe. Sin datos de media.');
+      smtcLog('No se pudo compilar SmtcNative.exe. Sin datos de media.');
       return;
     }
   }
 
   if (!exePath || stopped) return;
+  smtcLog(`spawning ${exePath}`);
 
   loopProc = spawn(exePath, [], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -145,19 +151,19 @@ async function launchLoop(): Promise<void> {
   });
 
   loopProc.stderr?.on('data', (chunk: Buffer) => {
-    console.error('[SMTC]', chunk.toString().trim());
+    smtcLog(chunk.toString().trim());
   });
 
   loopProc.on('exit', (code) => {
     loopProc = null;
+    smtcLog(`SmtcNative terminó (código ${String(code)})`);
     if (!stopped) {
-      console.error(`[SMTC] SmtcNative terminó (código ${String(code)}), reiniciando en 3 s`);
       setTimeout(() => void launchLoop(), 3_000);
     }
   });
 
   loopProc.on('error', (err) => {
-    console.error('[SMTC] Error al lanzar SmtcNative.exe:', err.message);
+    smtcLog(`Error al lanzar SmtcNative.exe: ${err.message}`);
   });
 }
 

@@ -66,8 +66,13 @@ mediaManager.onMediaChange(async (media: MediaInfo | null) => {
 
 // ─── Loop de render (250 ms) ─────────────────────────────────────────────────
 
+let _renderCount = 0;
 setInterval(async () => {
   const media = mediaManager.getCurrent();
+  _renderCount++;
+  if (_renderCount % 20 === 1) {   // cada ~5s
+    dbg(`render tick media=${media ? `"${media.title}|${media.artist}" playing=${String(media.isPlaying)}` : 'null'} touchCtx=${touchContexts.size} keyCtx=${keyContexts.size}`);
+  }
   viz = updateVisualizer(viz, media?.isPlaying ?? false);
 
   // Actualizar pantalla touch
@@ -100,6 +105,7 @@ sd.on('willAppear', async ({ action, context, payload }) => {
   // y settings.touchbarWidth indica el ancho real de la franja.
   const coords = payload?.coordinates as { column?: number; row?: number } | undefined;
   const isTouch = coords?.column === -1 && coords?.row === -1;
+  dbg(`willAppear action=${action} context=${context} isTouch=${String(isTouch)} coords=${JSON.stringify(coords)} settings=${JSON.stringify(payload?.settings)}`);
   const touchbarWidth: number = (payload?.settings as Record<string, unknown> | undefined)?.touchbarWidth as number | undefined ?? 750;
 
   if (isTouch) {

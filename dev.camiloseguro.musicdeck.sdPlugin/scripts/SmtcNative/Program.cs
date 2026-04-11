@@ -15,6 +15,9 @@ using Windows.Media.Control;
 
 // ── Dispatch de modo ─────────────────────────────────────────────────────────
 
+File.AppendAllText("C:\\Windows\\Temp\\smtc_startup.txt", $"[{DateTime.UtcNow:o}] startup args={args.Length}\n");
+Console.Error.WriteLine("[SMTC] startup");
+
 var http = new HttpClient
 {
     Timeout = TimeSpan.FromSeconds(8),
@@ -40,12 +43,13 @@ if (args.Length > 0)
 // ── Loop mode ────────────────────────────────────────────────────────────────
 
 var thumbCache = new Dictionary<string, string?>();
+int[] dbgTick = [0];
 
 while (true)
 {
     try
     {
-        var json = await GetMediaJsonAsync(thumbCache);
+        var json = await GetMediaJsonAsync(thumbCache, dbgTick);
         Console.WriteLine(json);
     }
     catch (Exception ex)
@@ -57,26 +61,69 @@ while (true)
 
 // ── Media reader ─────────────────────────────────────────────────────────────
 
-static async Task<string> GetMediaJsonAsync(Dictionary<string, string?> thumbCache)
+// Apps de navegador — menor prioridad que apps nativas de música
+static bool IsBrowser(string source)
 {
-    var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-    if (manager == null) return "{\"status\":\"no_media\"}";
+    HashSet<string> browserSources = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "brave.exe",
+        "chromium.exe", "iexplore.exe", "360chrome.exe"
+    };
+    return browserSources.Contains(System.IO.Path.GetFileName(source).ToLowerInvariant())
+        || source.Contains("chrome", StringComparison.OrdinalIgnoreCase)
+        || source.Contains("edge", StringComparison.OrdinalIgnoreCase)
+        || source.Contains("firefox", StringComparison.OrdinalIgnoreCase);
+}
 
-    var sessions = manager.GetSessions();
-    GlobalSystemMediaTransportControlsSession? session = null;
-
+static GlobalSystemMediaTransportControlsSession? PickBestSession(
+    IReadOnlyList<GlobalSystemMediaTransportControlsSession> sessions,
+    GlobalSystemMediaTransportControlsSession? current)
+{
+    // 1. App nativa reproduciendo (no navegador)
     foreach (var s in sessions)
     {
-        try
-        {
-            var pb = s.GetPlaybackInfo();
-            if (pb?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-            { session = s; break; }
-        }
-        catch { }
+        try {
+            if (s.GetPlaybackInfo()?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing
+                && !IsBrowser(s.SourceAppUserModelId ?? ""))
+                return s;
+        } catch { }
     }
 
-    if (session == null) session = manager.GetCurrentSession();
+    // 2. Navegador reproduciendo (YouTube, etc.)
+    foreach (var s in sessions)
+    {
+        try {
+            if (s.GetPlaybackInfo()?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                return s;
+        } catch { }
+    }
+
+    // 3. App nativa en pausa (SMTC "current session")
+    if (current != null && !IsBrowser(current.SourceAppUserModelId ?? "")) return current;
+
+    // 4. Cualquier sesión actual (puede ser navegador en pausa)
+    return current;
+}
+
+static async Task<string> GetMediaJsonAsync(Dictionary<string, string?> thumbCache, int[] dbgTick)
+{
+    Console.Error.WriteLine("[SMTC] before RequestAsync");
+    var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+    Console.Error.WriteLine($"[SMTC] after RequestAsync manager={manager != null}");
+    if (manager == null) return "{\"status\":\"no_media\"}";
+
+    // Debug: log all sessions every ~5 s
+    if (++dbgTick[0] % 25 == 1)
+    {
+        var sessions = manager.GetSessions();
+        Console.Error.WriteLine($"[SMTC-DBG] sessions={sessions.Count} current={manager.GetCurrentSession()?.SourceAppUserModelId ?? "null"}");
+        foreach (var s in sessions)
+        {
+            try { Console.Error.WriteLine($"[SMTC-DBG]  src={s.SourceAppUserModelId} status={s.GetPlaybackInfo()?.PlaybackStatus}"); } catch { }
+        }
+    }
+
+    var session = PickBestSession(manager.GetSessions(), manager.GetCurrentSession());
     if (session == null) return "{\"status\":\"no_media\"}";
 
     var props    = await session.TryGetMediaPropertiesAsync();
@@ -256,21 +303,7 @@ static async Task SendControlAsync(string action)
     var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
     if (manager == null) return;
 
-    var sessions = manager.GetSessions();
-    GlobalSystemMediaTransportControlsSession? session = null;
-
-    foreach (var s in sessions)
-    {
-        try
-        {
-            var pb = s.GetPlaybackInfo();
-            if (pb?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-            { session = s; break; }
-        }
-        catch { }
-    }
-
-    if (session == null) session = manager.GetCurrentSession();
+    var session = PickBestSession(manager.GetSessions(), manager.GetCurrentSession());
     if (session == null) return;
 
     switch (action)
