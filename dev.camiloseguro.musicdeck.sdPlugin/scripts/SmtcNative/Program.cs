@@ -15,7 +15,6 @@ using Windows.Media.Control;
 
 // ── Dispatch de modo ─────────────────────────────────────────────────────────
 
-File.AppendAllText("C:\\Windows\\Temp\\smtc_startup.txt", $"[{DateTime.UtcNow:o}] startup args={args.Length}\n");
 Console.Error.WriteLine("[SMTC] startup");
 
 var http = new HttpClient
@@ -42,14 +41,49 @@ if (args.Length > 0)
 
 // ── Loop mode ────────────────────────────────────────────────────────────────
 
+// Obtener el manager UNA sola vez — RequestAsync es costoso y no debe llamarse en bucle.
+// Reintentar con timeout de 5 s hasta que SMTC esté listo (puede tardar al inicio del PC).
+GlobalSystemMediaTransportControlsSessionManager? manager = null;
+while (manager == null)
+{
+    try
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        manager = await GlobalSystemMediaTransportControlsSessionManager
+                            .RequestAsync().AsTask(cts.Token);
+        Console.Error.WriteLine($"[SMTC] manager ready");
+    }
+    catch (OperationCanceledException)
+    {
+        Console.Error.WriteLine("[SMTC] RequestAsync timeout, retrying...");
+        await Task.Delay(1000);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"[SMTC] RequestAsync error: {ex.Message}, retrying...");
+        await Task.Delay(2000);
+    }
+}
+
 var thumbCache = new Dictionary<string, string?>();
-int[] dbgTick = [0];
+int dbgTick    = 0;
 
 while (true)
 {
     try
     {
-        var json = await GetMediaJsonAsync(thumbCache, dbgTick);
+        // Debug: log all sessions every ~5 s
+        if (++dbgTick % 25 == 1)
+        {
+            var sessions = manager.GetSessions();
+            Console.Error.WriteLine($"[SMTC-DBG] sessions={sessions.Count} current={manager.GetCurrentSession()?.SourceAppUserModelId ?? "null"}");
+            foreach (var s in sessions)
+            {
+                try { Console.Error.WriteLine($"[SMTC-DBG]  src={s.SourceAppUserModelId} status={s.GetPlaybackInfo()?.PlaybackStatus}"); } catch { }
+            }
+        }
+
+        var json = await GetMediaJsonAsync(manager, thumbCache);
         Console.WriteLine(json);
     }
     catch (Exception ex)
@@ -61,17 +95,14 @@ while (true)
 
 // ── Media reader ─────────────────────────────────────────────────────────────
 
-// Apps de navegador — menor prioridad que apps nativas de música
 static bool IsBrowser(string source)
 {
-    HashSet<string> browserSources = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "brave.exe",
-        "chromium.exe", "iexplore.exe", "360chrome.exe"
-    };
-    return browserSources.Contains(System.IO.Path.GetFileName(source).ToLowerInvariant())
-        || source.Contains("chrome", StringComparison.OrdinalIgnoreCase)
-        || source.Contains("edge", StringComparison.OrdinalIgnoreCase)
+    var name = System.IO.Path.GetFileName(source).ToLowerInvariant();
+    if (name is "chrome.exe" or "msedge.exe" or "firefox.exe" or "opera.exe"
+             or "brave.exe" or "chromium.exe" or "iexplore.exe" or "360chrome.exe")
+        return true;
+    return source.Contains("chrome",  StringComparison.OrdinalIgnoreCase)
+        || source.Contains("edge",    StringComparison.OrdinalIgnoreCase)
         || source.Contains("firefox", StringComparison.OrdinalIgnoreCase);
 }
 
@@ -98,31 +129,17 @@ static GlobalSystemMediaTransportControlsSession? PickBestSession(
         } catch { }
     }
 
-    // 3. App nativa en pausa (SMTC "current session")
+    // 3. App nativa en pausa — preferir sobre navegador en pausa
     if (current != null && !IsBrowser(current.SourceAppUserModelId ?? "")) return current;
 
     // 4. Cualquier sesión actual (puede ser navegador en pausa)
     return current;
 }
 
-static async Task<string> GetMediaJsonAsync(Dictionary<string, string?> thumbCache, int[] dbgTick)
+static async Task<string> GetMediaJsonAsync(
+    GlobalSystemMediaTransportControlsSessionManager manager,
+    Dictionary<string, string?> thumbCache)
 {
-    Console.Error.WriteLine("[SMTC] before RequestAsync");
-    var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-    Console.Error.WriteLine($"[SMTC] after RequestAsync manager={manager != null}");
-    if (manager == null) return "{\"status\":\"no_media\"}";
-
-    // Debug: log all sessions every ~5 s
-    if (++dbgTick[0] % 25 == 1)
-    {
-        var sessions = manager.GetSessions();
-        Console.Error.WriteLine($"[SMTC-DBG] sessions={sessions.Count} current={manager.GetCurrentSession()?.SourceAppUserModelId ?? "null"}");
-        foreach (var s in sessions)
-        {
-            try { Console.Error.WriteLine($"[SMTC-DBG]  src={s.SourceAppUserModelId} status={s.GetPlaybackInfo()?.PlaybackStatus}"); } catch { }
-        }
-    }
-
     var session = PickBestSession(manager.GetSessions(), manager.GetCurrentSession());
     if (session == null) return "{\"status\":\"no_media\"}";
 
@@ -170,8 +187,6 @@ static async Task<string> GetMediaJsonAsync(Dictionary<string, string?> thumbCac
 
     string? thumbnail = thumbCache.GetValueOrDefault(cacheKey);
 
-    // positionTs: milisegundos UTC cuando se leyó la posición,
-    // permite al cliente interpolar en tiempo real sin depender del delay del pipe.
     long positionTs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     return JsonSerializer.Serialize(new MediaPayload(
@@ -184,7 +199,6 @@ static async Task<string> GetMediaJsonAsync(Dictionary<string, string?> thumbCac
 
 static async Task<string> FetchLyricsJsonAsync(HttpClient http, string title, string artist, string album, int duration)
 {
-    // Variaciones del título: quitar "(feat. X)", "[X]", "(X Remix)", etc.
     var titles  = TitleVariants(title);
     var artists = ArtistVariants(artist);
 
@@ -192,17 +206,14 @@ static async Task<string> FetchLyricsJsonAsync(HttpClient http, string title, st
     {
         foreach (var a in artists)
         {
-            // Con álbum y duración
             var lines = await TryGetLrc(http, t, a, album, duration.ToString());
             if (lines != null) return JsonSerializer.Serialize(lines);
 
-            // Sin álbum ni duración
             lines = await TryGetLrc(http, t, a, "", "");
             if (lines != null) return JsonSerializer.Serialize(lines);
         }
     }
 
-    // Búsqueda libre con el título original
     foreach (var t in titles)
     {
         var lines = await TrySearchLrc(http, t, artists[0]);
@@ -215,26 +226,18 @@ static async Task<string> FetchLyricsJsonAsync(HttpClient http, string title, st
 static string[] TitleVariants(string title)
 {
     var variants = new System.Collections.Generic.List<string> { title };
-
-    // Quitar todo lo que esté entre paréntesis o corchetes
     var clean = System.Text.RegularExpressions.Regex.Replace(title, @"\s*[\(\[][^)\]]*[\)\]]", "").Trim();
     if (clean != title && !string.IsNullOrEmpty(clean)) variants.Add(clean);
-
-    // Quitar solo el feat. manteniendo el resto
     var noFeat = System.Text.RegularExpressions.Regex.Replace(title, @"\s*[\(\[]?feat\..*?[\)\]]?", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim().TrimEnd('-').Trim();
     if (noFeat != title && !string.IsNullOrEmpty(noFeat) && !variants.Contains(noFeat)) variants.Add(noFeat);
-
     return variants.ToArray();
 }
 
 static string[] ArtistVariants(string artist)
 {
     var variants = new System.Collections.Generic.List<string> { artist };
-
-    // Si hay coma o & o "ft." tomar solo el primero
     var primary = System.Text.RegularExpressions.Regex.Split(artist, @",|&|\bft\.|\bfeat\.|\bx\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)[0].Trim();
     if (primary != artist && !string.IsNullOrEmpty(primary)) variants.Add(primary);
-
     return variants.ToArray();
 }
 
@@ -245,7 +248,6 @@ static async Task<LyricLine[]?> TryGetLrc(HttpClient http, string title, string 
         var q = $"track_name={Uri.EscapeDataString(title)}&artist_name={Uri.EscapeDataString(artist)}";
         if (!string.IsNullOrEmpty(album))    q += $"&album_name={Uri.EscapeDataString(album)}";
         if (!string.IsNullOrEmpty(duration)) q += $"&duration={duration}";
-
         var raw  = await http.GetStringAsync($"https://lrclib.net/api/get?{q}");
         var data = JsonSerializer.Deserialize<LrcLibResponse>(raw);
         if (data?.SyncedLyrics != null)
@@ -300,7 +302,15 @@ static LyricLine[] ParseLrc(string lrc)
 
 static async Task SendControlAsync(string action)
 {
-    var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+    GlobalSystemMediaTransportControlsSessionManager? manager = null;
+    try
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        manager = await GlobalSystemMediaTransportControlsSessionManager
+                            .RequestAsync().AsTask(cts.Token);
+    }
+    catch { return; }
+
     if (manager == null) return;
 
     var session = PickBestSession(manager.GetSessions(), manager.GetCurrentSession());
