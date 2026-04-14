@@ -1,91 +1,108 @@
 /**
  * canvas-renderer.ts
- * Genera imágenes PNG para StreamDock:
+ * Genera imágenes PNG 144×144 para cada tipo de botón de Music Deck.
  *
- *   renderTouchStrip()  → 800×80 px  para la pantalla touch (SecondaryScreen)
- *   renderControlKey()  → 144×144 px para botones normales (Keypad)
- *
- * Dimensiones verificadas contra el plugin com.claude.tracker.sdPlugin.
+ *  renderAlbumArtKey(quadrant, media) → portada recortada (cuadrante 0-3)
+ *  renderControlKey(actionId, media)  → play/pause, next, previous
+ *  renderTitleKey(media)              → título de la canción
+ *  renderArtistKey(media)             → artista
+ *  renderDurationKey(media)           → posición / duración
  */
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import type { SKRSContext2D } from '@napi-rs/canvas';
-import type { MediaInfo, LyricLine } from '../types';
-import { lyricsWindow }  from '../lyrics/sync';
-import type { VisualizerState } from './visualizer';
+import type { MediaInfo } from '../types';
 
-// ─── Colores ──────────────────────────────────────────────────────────────────
+const KW = 144;
+const KH = 144;
+
 const C = {
-  bg:      '#0d0d0d',
+  bg:      '#111111',
   accent:  '#e03030',
   text:    '#ffffff',
-  dim:     '#888888',
-  dimDark: '#444444',
+  dim:     '#aaaaaa',
+  dimDark: '#555555',
+  label:   '#666666',
   progBg:  '#2a2a2a',
 };
 
 type Ctx = SKRSContext2D;
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  PANTALLA TOUCH  800×80
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Dispatcher central ───────────────────────────────────────────────────────
 
-const TH = 80;  // touch height (fijo)
+export async function renderKey(actionId: string, media: MediaInfo | null): Promise<string> {
+  if (actionId.startsWith('dev.camiloseguro.musicdeck.albumart.')) {
+    const q = parseInt(actionId.slice(-1), 10) as 0 | 1 | 2 | 3;
+    return renderAlbumArtKey(q, media);
+  }
+  if (actionId === 'dev.camiloseguro.musicdeck.title')    return renderTitleKey(media);
+  if (actionId === 'dev.camiloseguro.musicdeck.artist')   return renderArtistKey(media);
+  if (actionId === 'dev.camiloseguro.musicdeck.duration') return renderDurationKey(media);
+  return renderControlKey(actionId, media);
+}
+
+// ─── Portada (cuadrante) ──────────────────────────────────────────────────────
 
 /**
- * Layout proporcional al ancho real del touchbar (default 750):
- *  [0 .. TH]          → portada / visualizador (cuadrado TH×TH)
- *  [TH+8 .. TH+8+220] → título, artista, progreso
- *  resto izquierdo    → letra actual
- *  último 25%         → letra siguiente
+ * Quadrant layout (la imagen completa mide 288×288 sobre 4 botones):
+ *   0 = top-left     1 = top-right
+ *   2 = bottom-left  3 = bottom-right
  */
-export async function renderTouchStrip(
-  media:    MediaInfo | null,
-  lyrics:   LyricLine[],
-  viz:      VisualizerState,
-  width   = 750,
-  accent  = C.accent,
+export async function renderAlbumArtKey(
+  quadrant: 0 | 1 | 2 | 3,
+  media: MediaInfo | null,
 ): Promise<string> {
-  const TW = width;
-  const canvas = createCanvas(TW, TH);
+  const canvas = createCanvas(KW, KH);
   const ctx    = canvas.getContext('2d');
 
   ctx.fillStyle = C.bg;
-  ctx.fillRect(0, 0, TW, TH);
+  ctx.fillRect(0, 0, KW, KH);
 
-  if (!media) {
-    drawIdleStrip(ctx, TW, accent);
+  if (!media?.thumbnailBase64) {
+    drawNoArtPlaceholder(ctx, quadrant);
     return toDataUrl(canvas);
   }
 
-  const artW  = TH;    // 80 px cuadrado
-  const infoX = artW + 8;
-
-  await drawArt(ctx, media, viz, accent, 0, 0, artW, TH);
-
-  const hasLyrics = lyrics.length > 0;
-  const infoW = Math.round(TW * 0.28);
-  const curX  = infoX + infoW + 8;
-  const curW  = TW - curX - 4;
-
-  drawInfoPanel(ctx, media, accent, infoX, 0, infoW, TH);
-  if (hasLyrics && curW > 40) {
-    drawLyricPanel(ctx, lyrics, media.position, 'current', accent, curX, 0, curW, TH);
+  try {
+    const img = await loadImage(Buffer.from(media.thumbnailBase64, 'base64'));
+    // Dibujamos la imagen completa a 288×288 y usamos el offset del cuadrante
+    const ox = (quadrant === 1 || quadrant === 3) ? -KW : 0;
+    const oy = (quadrant === 2 || quadrant === 3) ? -KH : 0;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, KW, KH);
+    ctx.clip();
+    ctx.drawImage(img, ox, oy, KW * 2, KH * 2);
+    ctx.restore();
+  } catch {
+    drawNoArtPlaceholder(ctx, quadrant);
   }
 
   return toDataUrl(canvas);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  BOTONES  144×144
-// ─────────────────────────────────────────────────────────────────────────────
+function drawNoArtPlaceholder(ctx: Ctx, quadrant: number): void {
+  // Fondo oscuro con gradiente sutil
+  const grad = ctx.createLinearGradient(0, 0, KW, KH);
+  grad.addColorStop(0, '#1a1a1a');
+  grad.addColorStop(1, '#0d0d0d');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, KW, KH);
 
-const KW = 144;
-const KH = 144;
+  // Solo en el cuadrante 3 (abajo-der) mostramos el ícono para no repetirlo 4x
+  if (quadrant === 3) {
+    ctx.fillStyle    = C.dimDark;
+    ctx.font         = '48px Arial';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('♪', KW / 2, KH / 2);
+  }
+}
+
+// ─── Controles (play/pause, next, previous) ───────────────────────────────────
 
 export async function renderControlKey(
   actionId: string,
   media:    MediaInfo | null,
-  accent  = C.accent,
 ): Promise<string> {
   const canvas = createCanvas(KW, KH);
   const ctx    = canvas.getContext('2d');
@@ -95,304 +112,305 @@ export async function renderControlKey(
   const isPrev = actionId === 'dev.camiloseguro.musicdeck.previous';
   const playing = media?.isPlaying ?? false;
 
-  // ── Fondo: portada a pantalla completa con overlay oscuro fuerte ──────────
-  ctx.fillStyle = '#111';
+  // Fondo
+  ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, KW, KH);
 
+  // Portada de fondo con opacidad baja
   if (media?.thumbnailBase64) {
     try {
       const img = await loadImage(Buffer.from(media.thumbnailBase64, 'base64'));
       ctx.save();
-      ctx.globalAlpha = 0.35;
+      ctx.globalAlpha = 0.25;
       ctx.drawImage(img, 0, 0, KW, KH);
       ctx.globalAlpha = 1;
       ctx.restore();
     } catch { /* sin portada */ }
   }
 
-  // Gradiente oscuro sobre la portada para legibilidad
+  // Overlay oscuro
   const grad = ctx.createLinearGradient(0, 0, 0, KH);
-  grad.addColorStop(0,   'rgba(0,0,0,0.55)');
-  grad.addColorStop(0.5, 'rgba(0,0,0,0.30)');
-  grad.addColorStop(1,   'rgba(0,0,0,0.80)');
+  grad.addColorStop(0,   'rgba(0,0,0,0.6)');
+  grad.addColorStop(0.5, 'rgba(0,0,0,0.35)');
+  grad.addColorStop(1,   'rgba(0,0,0,0.75)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, KW, KH);
 
-  // ── Borde superior de acento ─────────────────────────────────────────────
-  ctx.fillStyle = accent;
+  // Línea de acento arriba
+  ctx.fillStyle = playing && isPlay ? C.accent : '#333';
   ctx.fillRect(0, 0, KW, 3);
 
-  // ── Símbolo grande en el centro del botón ────────────────────────────────
+  // Círculo de fondo del símbolo
   const cx = KW / 2;
-  const cy = KH / 2 - 10;
-  const R  = 28;   // radio círculo de fondo del símbolo
+  const cy = KH / 2 - 8;
+  const R  = 30;
 
-  // Círculo de fondo
   ctx.beginPath();
   ctx.arc(cx, cy, R, 0, Math.PI * 2);
-  ctx.fillStyle = isPlay && playing
-    ? accent
-    : 'rgba(255,255,255,0.12)';
+  ctx.fillStyle = isPlay && playing ? C.accent : 'rgba(255,255,255,0.10)';
   ctx.fill();
 
-  // Símbolo dibujado
-  ctx.fillStyle = isPlay && playing ? '#000' : accent;
+  // Símbolo
+  ctx.fillStyle = isPlay && playing ? '#000' : C.accent;
 
   if (isPlay) {
     if (playing) {
-      // Pausa: dos barras
-      const bw = 7; const bh = 20; const gap = 6;
+      const bw = 7, bh = 22, gap = 7;
       ctx.fillRect(cx - gap / 2 - bw, cy - bh / 2, bw, bh);
       ctx.fillRect(cx + gap / 2,      cy - bh / 2, bw, bh);
     } else {
-      // Play: triángulo
       ctx.beginPath();
-      ctx.moveTo(cx - 9,  cy - 14);
-      ctx.lineTo(cx + 16, cy);
-      ctx.lineTo(cx - 9,  cy + 14);
+      ctx.moveTo(cx - 10, cy - 15);
+      ctx.lineTo(cx + 17, cy);
+      ctx.lineTo(cx - 10, cy + 15);
       ctx.closePath();
       ctx.fill();
     }
   } else if (isNext) {
-    // Dos triángulos apuntando derecha + barra
     ctx.beginPath();
-    ctx.moveTo(cx - 14, cy - 13); ctx.lineTo(cx - 1, cy); ctx.lineTo(cx - 14, cy + 13);
+    ctx.moveTo(cx - 15, cy - 13); ctx.lineTo(cx - 2, cy); ctx.lineTo(cx - 15, cy + 13);
     ctx.closePath(); ctx.fill();
     ctx.beginPath();
-    ctx.moveTo(cx - 1, cy - 13); ctx.lineTo(cx + 12, cy); ctx.lineTo(cx - 1, cy + 13);
+    ctx.moveTo(cx - 2, cy - 13); ctx.lineTo(cx + 11, cy); ctx.lineTo(cx - 2, cy + 13);
     ctx.closePath(); ctx.fill();
-    ctx.fillRect(cx + 12, cy - 13, 4, 26);
+    ctx.fillRect(cx + 11, cy - 13, 4, 26);
   } else if (isPrev) {
-    // Barra + dos triángulos apuntando izquierda
-    ctx.fillRect(cx - 16, cy - 13, 4, 26);
+    ctx.fillRect(cx - 15, cy - 13, 4, 26);
     ctx.beginPath();
-    ctx.moveTo(cx + 14, cy - 13); ctx.lineTo(cx + 1, cy); ctx.lineTo(cx + 14, cy + 13);
+    ctx.moveTo(cx + 15, cy - 13); ctx.lineTo(cx + 2, cy); ctx.lineTo(cx + 15, cy + 13);
     ctx.closePath(); ctx.fill();
     ctx.beginPath();
-    ctx.moveTo(cx + 1, cy - 13); ctx.lineTo(cx - 12, cy); ctx.lineTo(cx + 1, cy + 13);
+    ctx.moveTo(cx + 2, cy - 13); ctx.lineTo(cx - 11, cy); ctx.lineTo(cx + 2, cy + 13);
     ctx.closePath(); ctx.fill();
   }
 
-  // ── Texto: título y artista en la parte inferior ─────────────────────────
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'bottom';
-
+  // Título y artista en la parte inferior
   if (media?.title) {
-    ctx.fillStyle = '#ffffff';
-    ctx.font      = 'bold 13px Arial';
-    ctx.fillText(clip(media.title, 16), KW / 2, KH - 18);
-
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.font      = '11px Arial';
-    ctx.fillText(clip(media.artist, 18), KW / 2, KH - 5);
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle    = 'rgba(255,255,255,0.9)';
+    ctx.font         = 'bold 12px Arial';
+    ctx.fillText(clip(media.title, 16), KW / 2, KH - 16);
+    ctx.fillStyle = 'rgba(255,255,255,0.50)';
+    ctx.font      = '10px Arial';
+    ctx.fillText(clip(media.artist, 20), KW / 2, KH - 4);
   } else {
-    ctx.fillStyle = C.dimDark;
-    ctx.font      = '11px Arial';
-    ctx.fillText('Sin media', KW / 2, KH - 8);
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle    = C.dimDark;
+    ctx.font         = '10px Arial';
+    ctx.fillText('Sin media', KW / 2, KH - 6);
   }
 
   return toDataUrl(canvas);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Secciones internas del touch strip
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Título ───────────────────────────────────────────────────────────────────
 
-function drawIdleStrip(ctx: Ctx, TW: number, accent: string): void {
-  ctx.fillStyle    = '#161616';
-  ctx.fillRect(0, 0, TW, TH);
-  ctx.fillStyle    = C.dimDark;
-  ctx.font         = '13px Arial';
+export async function renderTitleKey(media: MediaInfo | null): Promise<string> {
+  const canvas = createCanvas(KW, KH);
+  const ctx    = canvas.getContext('2d');
+
+  drawInfoBackground(ctx, media);
+
   ctx.textAlign    = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('♪  Sin media activo', TW / 2, TH / 2);
-}
-
-async function drawArt(
-  ctx: Ctx, media: MediaInfo, viz: VisualizerState, accent: string,
-  x: number, y: number, w: number, h: number,
-): Promise<void> {
-  if (media.thumbnailBase64) {
-    try {
-      const img = await loadImage(Buffer.from(media.thumbnailBase64, 'base64'));
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(x, y, w, h);
-      ctx.clip();
-      ctx.drawImage(img, x, y, w, h);
-      ctx.restore();
-      return;
-    } catch { /* fallthrough */ }
-  }
-  drawViz(ctx, viz, media.isPlaying, accent, x, y, w, h);
-}
-
-function drawInfoPanel(
-  ctx: Ctx, media: MediaInfo, accent: string,
-  x: number, y: number, w: number, h: number,
-): void {
-  const pad = 6;
-  const tx  = x + pad;
-
-  // Indicador play/pause (top-right)
-  ctx.fillStyle    = accent;
-  ctx.font         = '11px Arial';
-  ctx.textAlign    = 'right';
   ctx.textBaseline = 'top';
-  ctx.fillText(media.isPlaying ? '▶' : '⏸', x + w - pad, y + pad);
 
-  // Título
-  ctx.fillStyle    = C.text;
-  ctx.font         = 'bold 13px Arial';
-  ctx.textAlign    = 'left';
-  ctx.fillText(clip(media.title, 22), tx, y + 8);
+  // Etiqueta
+  ctx.fillStyle = C.label;
+  ctx.font      = '10px Arial';
+  ctx.fillText('TÍTULO', KW / 2, 10);
 
-  // Artista
-  ctx.fillStyle = C.dim;
-  ctx.font      = '11px Arial';
-  ctx.fillText(clip(media.artist, 26), tx, y + 27);
+  // Línea de acento
+  ctx.fillStyle = C.accent;
+  ctx.fillRect(KW / 2 - 16, 22, 32, 2);
 
-  // Álbum
-  ctx.font = '10px Arial';
-  ctx.fillText(clip(media.album, 28), tx, y + 43);
+  if (media?.title) {
+    ctx.fillStyle = C.text;
+    drawCenteredText(ctx, media.title, KW / 2, 34, KW - 16, 15, 'bold');
+  } else {
+    ctx.fillStyle = C.dimDark;
+    ctx.font      = '12px Arial';
+    ctx.fillText('—', KW / 2, 38);
+  }
 
-  // Barra de progreso
-  if (media.duration > 0) {
-    const pct  = Math.min(1, media.position / media.duration);
-    const barY = y + h - 14;
-    const barW = w - pad * 2;
+  return toDataUrl(canvas);
+}
 
-    ctx.fillStyle = C.progBg;
-    rrect(ctx, tx, barY, barW, 3, 1.5);
-    ctx.fill();
+// ─── Artista ──────────────────────────────────────────────────────────────────
 
-    ctx.fillStyle = accent;
-    rrect(ctx, tx, barY, barW * pct, 3, 1.5);
-    ctx.fill();
+export async function renderArtistKey(media: MediaInfo | null): Promise<string> {
+  const canvas = createCanvas(KW, KH);
+  const ctx    = canvas.getContext('2d');
 
-    // Tiempos
+  drawInfoBackground(ctx, media);
+
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'top';
+
+  // Etiqueta
+  ctx.fillStyle = C.label;
+  ctx.font      = '10px Arial';
+  ctx.fillText('ARTISTA', KW / 2, 10);
+
+  // Línea de acento
+  ctx.fillStyle = C.accent;
+  ctx.fillRect(KW / 2 - 16, 22, 32, 2);
+
+  if (media?.artist) {
+    ctx.fillStyle = C.dim;
+    drawCenteredText(ctx, media.artist, KW / 2, 34, KW - 16, 14, 'normal');
+  } else {
+    ctx.fillStyle = C.dimDark;
+    ctx.font      = '12px Arial';
+    ctx.fillText('—', KW / 2, 38);
+  }
+
+  // Álbum si hay
+  if (media?.album) {
     ctx.fillStyle    = C.dimDark;
-    ctx.font         = '8px Arial';
-    ctx.textAlign    = 'left';
+    ctx.font         = '10px Arial';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(fmt(media.position), tx, y + h - 2);
-    ctx.textAlign = 'right';
-    ctx.fillText(fmt(media.duration), x + w - pad, y + h - 2);
+    ctx.fillText(clip(media.album, 20), KW / 2, KH - 10);
   }
+
+  return toDataUrl(canvas);
 }
 
-function drawLyricPanel(
-  ctx:      Ctx,
-  lyrics:   LyricLine[],
-  position: number,
-  which:    'current' | 'next',
-  accent:   string,
-  x: number, y: number, w: number, h: number,
-): void {
-  const win    = lyricsWindow(lyrics, position);
-  const text   = which === 'current' ? win.current : win.next;
-  const active = which === 'current';
+// ─── Duración ─────────────────────────────────────────────────────────────────
 
-  // Separador vertical sutil
-  ctx.fillStyle = '#1e1e1e';
-  ctx.fillRect(x - 4, y + 8, 1, h - 16);
+export async function renderDurationKey(media: MediaInfo | null): Promise<string> {
+  const canvas = createCanvas(KW, KH);
+  const ctx    = canvas.getContext('2d');
 
-  if (!text) {
-    ctx.fillStyle    = C.dimDark;
-    ctx.font         = '16px Arial';
-    ctx.textAlign    = 'center';
+  drawInfoBackground(ctx, media);
+
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'top';
+
+  // Etiqueta
+  ctx.fillStyle = C.label;
+  ctx.font      = '10px Arial';
+  ctx.fillText('DURACIÓN', KW / 2, 10);
+
+  if (media && media.duration > 0) {
+    const pct = Math.min(1, media.position / media.duration);
+
+    // Tiempo actual grande
+    ctx.fillStyle    = C.text;
+    ctx.font         = 'bold 28px Arial';
     ctx.textBaseline = 'middle';
-    ctx.fillText('♪', x + w / 2, y + h / 2);
-    return;
-  }
+    ctx.fillText(fmt(media.position), KW / 2, KH / 2 - 10);
 
-  // Halo suave detrás de la letra activa
-  if (active) {
-    const rad = ctx.createRadialGradient(x + w / 2, y + h / 2, 0, x + w / 2, y + h / 2, w * 0.65);
-    rad.addColorStop(0, hexAlpha(accent, 0.10));
-    rad.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = rad;
-    ctx.fillRect(x, y, w, h);
-  }
+    // Total más pequeño
+    ctx.fillStyle = C.dim;
+    ctx.font      = '13px Arial';
+    ctx.fillText(`/ ${fmt(media.duration)}`, KW / 2, KH / 2 + 20);
 
-  ctx.fillStyle    = active ? C.text : C.dimDark;
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font         = active ? `bold 15px Arial` : `11px Arial`;
-
-  const lines  = wrapText(ctx, text, w - 14);
-  const lineH  = 17;
-  const startY = y + h / 2 - ((lines.length - 1) * lineH) / 2;
-
-  lines.forEach((l, i) => ctx.fillText(l, x + w / 2, startY + i * lineH));
-
-  // Punto de acento
-  if (active) {
-    ctx.fillStyle = accent;
-    ctx.beginPath();
-    ctx.arc(x + w / 2, y + h - 6, 2, 0, Math.PI * 2);
+    // Barra de progreso
+    const barX = 12, barY = KH - 24, barW = KW - 24, barH = 4;
+    ctx.fillStyle = C.progBg;
+    rrect(ctx, barX, barY, barW, barH, 2);
     ctx.fill();
+
+    ctx.fillStyle = C.accent;
+    if (pct > 0) {
+      rrect(ctx, barX, barY, Math.max(barH, barW * pct), barH, 2);
+      ctx.fill();
+    }
+
+    // Tiempos bajo la barra
+    ctx.font         = '9px Arial';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle    = C.dimDark;
+    ctx.textAlign    = 'left';
+    ctx.fillText(fmt(media.position), barX, KH - 14);
+    ctx.textAlign = 'right';
+    ctx.fillText(fmt(media.duration), barX + barW, KH - 14);
+    ctx.textAlign = 'center';
+
+  } else {
+    ctx.fillStyle    = C.dimDark;
+    ctx.font         = '22px Arial';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('—:——', KW / 2, KH / 2);
   }
+
+  return toDataUrl(canvas);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Visualizador de barras
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Helpers de render ────────────────────────────────────────────────────────
 
-function drawViz(
-  ctx: Ctx, viz: VisualizerState, playing: boolean, accent: string,
-  x: number, y: number, w: number, h: number,
+function drawInfoBackground(ctx: Ctx, media: MediaInfo | null): void {
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, KW, KH);
+
+  if (media?.thumbnailBase64) {
+    try {
+      // No podemos await aquí, se llama de forma síncrona como fondo suave
+      // Se carga en las funciones que lo necesitan
+    } catch { /* noop */ }
+  }
+
+  // Gradiente sutil de fondo
+  const grad = ctx.createLinearGradient(0, 0, 0, KH);
+  grad.addColorStop(0, 'rgba(30,30,30,1)');
+  grad.addColorStop(1, 'rgba(10,10,10,1)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, KW, KH);
+}
+
+/**
+ * Dibuja texto centrado con font-size que se reduce automáticamente si no cabe.
+ */
+function drawCenteredText(
+  ctx: Ctx, text: string,
+  cx: number, startY: number,
+  maxW: number, baseFontSize: number,
+  weight: 'bold' | 'normal',
 ): void {
-  const n    = viz.bars.length;
-  const barW = w / n;
-  const gap  = 1;
+  let size = baseFontSize;
+  ctx.font = `${weight} ${size}px Arial`;
 
-  viz.bars.forEach((bh, i) => {
-    const height = Math.max(3, bh * (h - 8));
-    const bx     = x + i * barW + gap / 2;
-    const by     = y + h - height - 4;
-    const bw     = barW - gap;
+  while (ctx.measureText(text).width > maxW && size > 9) {
+    size--;
+    ctx.font = `${weight} ${size}px Arial`;
+  }
 
-    const grad = ctx.createLinearGradient(bx, by + height, bx, by);
-    grad.addColorStop(0, accent);
-    grad.addColorStop(1, `rgba(255,255,255,${0.15 + bh * 0.3})`);
+  // Si aún no cabe, truncar
+  let display = text;
+  while (ctx.measureText(display).width > maxW && display.length > 1) {
+    display = display.slice(0, -1);
+  }
+  if (display !== text) display = display.slice(0, -1) + '…';
 
-    ctx.globalAlpha = playing ? 0.85 : 0.35;
-    ctx.fillStyle   = grad;
-    rrect(ctx, bx, by, bw, height, [2, 2, 0, 0]);
-    ctx.fill();
-  });
-  ctx.globalAlpha = 1;
+  // Centrar verticalmente en el espacio disponible
+  const lineH  = size + 4;
+  const words  = display.split(' ');
+  const lines: string[] = [];
+  let line = '';
+
+  for (const w of words) {
+    const test = line ? `${line} ${w}` : w;
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line);
+      line = w;
+      if (lines.length >= 3) { line += '…'; break; }
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines.push(line);
+
+  const totalH = lines.length * lineH;
+  const midY   = startY + (KH - startY - 20) / 2;
+  const y0     = midY - totalH / 2;
+
+  ctx.textBaseline = 'top';
+  lines.forEach((l, i) => ctx.fillText(l, cx, y0 + i * lineH));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-function roundRect(ctx: Ctx, x: number, y: number, w: number, h: number, r: number): void {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y,     x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h,     x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y,         x + r, y);
-  ctx.closePath();
-}
-
-function drawArtPlaceholder(ctx: Ctx, x: number, y: number, size: number, accent: string): void {
-  ctx.fillStyle = '#1a1a1a';
-  roundRect(ctx, x, y, size, size, 8);
-  ctx.fill();
-  ctx.fillStyle = hexAlpha(accent, 0.3);
-  ctx.font      = `${Math.round(size * 0.4)}px Arial`;
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('♪', x + size / 2, y + size / 2);
-}
+// ─── Utilidades ───────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toDataUrl(canvas: any): string {
@@ -411,46 +429,20 @@ function fmt(secs: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function wrapText(ctx: Ctx, text: string, maxW: number): string[] {
-  const words = text.split(' ');
-  const lines: string[] = [];
-  let line = '';
-
-  for (const w of words) {
-    const test = line ? `${line} ${w}` : w;
-    if (ctx.measureText(test).width > maxW && line) {
-      lines.push(line);
-      line = w;
-    } else {
-      line = test;
-    }
-  }
-  if (line) lines.push(line);
-  return lines;
-}
-
 function rrect(
   ctx: Ctx,
   x: number, y: number, w: number, h: number,
-  r: number | [number, number, number, number],
+  r: number,
 ): void {
-  const [tl, tr, br, bl] = Array.isArray(r) ? r : [r, r, r, r];
   ctx.beginPath();
-  ctx.moveTo(x + tl, y);
-  ctx.lineTo(x + w - tr, y);
-  ctx.quadraticCurveTo(x + w, y,     x + w, y + tr);
-  ctx.lineTo(x + w, y + h - br);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - br, y + h);
-  ctx.lineTo(x + bl, y + h);
-  ctx.quadraticCurveTo(x, y + h,     x, y + h - bl);
-  ctx.lineTo(x, y + tl);
-  ctx.quadraticCurveTo(x, y,         x + tl, y);
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y,     x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h,     x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y,         x + r, y);
   ctx.closePath();
-}
-
-function hexAlpha(hex: string, a: number): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${a})`;
 }

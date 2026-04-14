@@ -1,9 +1,9 @@
 {
   "SDKVersion": 1,
   "Name": "Music Deck",
-  "Version": "1.0.0",
+  "Version": "1.1.0",
   "Author": "Camilo Seguro",
-  "Description": "Canción actual con letras sincronizadas y visualizador. Apple Music, Spotify, Chrome y cualquier app SMTC.",
+  "Description": "Portada, controles y info de la canción actual. Apple Music, Spotify, Chrome y cualquier app SMTC.",
   "Category": "Music Deck",
   "CategoryIcon": "imgs/category",
   "Icon": "imgs/plugin",
@@ -11,11 +11,38 @@
   "CodePathMac": "bin/plugin.js",
   "Actions": [
     {
-      "Name": "Now Playing",
-      "UUID": "dev.camiloseguro.musicdeck.nowplaying",
+      "Name": "Portada — Arriba Izq",
+      "UUID": "dev.camiloseguro.musicdeck.albumart.q0",
       "Icon": "imgs/plugin",
-      "Tooltip": "Muestra portada, título, artista y letras en tiempo real. Arrástralo a la pantalla touch.",
-      "Controllers": [],
+      "Tooltip": "Cuadrante superior-izquierdo de la portada del álbum. Coloca los 4 tiles juntos para ver la portada completa.",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
+    },
+    {
+      "Name": "Portada — Arriba Der",
+      "UUID": "dev.camiloseguro.musicdeck.albumart.q1",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Cuadrante superior-derecho de la portada del álbum.",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
+    },
+    {
+      "Name": "Portada — Abajo Izq",
+      "UUID": "dev.camiloseguro.musicdeck.albumart.q2",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Cuadrante inferior-izquierdo de la portada del álbum.",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
+    },
+    {
+      "Name": "Portada — Abajo Der",
+      "UUID": "dev.camiloseguro.musicdeck.albumart.q3",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Cuadrante inferior-derecho de la portada del álbum.",
+      "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
       "SupportedInMultiActions": false
     },
@@ -29,7 +56,7 @@
       "SupportedInMultiActions": true
     },
     {
-      "Name": "Next Track",
+      "Name": "Siguiente",
       "UUID": "dev.camiloseguro.musicdeck.next",
       "Icon": "imgs/plugin",
       "Tooltip": "Salta a la siguiente canción",
@@ -38,13 +65,40 @@
       "SupportedInMultiActions": true
     },
     {
-      "Name": "Previous Track",
+      "Name": "Anterior",
       "UUID": "dev.camiloseguro.musicdeck.previous",
       "Icon": "imgs/plugin",
       "Tooltip": "Vuelve a la canción anterior",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
       "SupportedInMultiActions": true
+    },
+    {
+      "Name": "Título",
+      "UUID": "dev.camiloseguro.musicdeck.title",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Muestra el título de la canción actual",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
+    },
+    {
+      "Name": "Artista",
+      "UUID": "dev.camiloseguro.musicdeck.artist",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Muestra el artista de la canción actual",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
+    },
+    {
+      "Name": "Duración",
+      "UUID": "dev.camiloseguro.musicdeck.duration",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Muestra la posición y duración de la canción actual",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
     }
   ],
   "OS": [
