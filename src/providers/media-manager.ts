@@ -1,7 +1,7 @@
 /**
  * media-manager.ts
- * En Windows: lee el caché de smtc-windows (proceso PowerShell persistente).
- * En Mac: llama AppleScript cada 1 s.
+ * En Windows: lee el caché de smtc-windows (proceso .NET persistente).
+ * En Mac: prueba Apple Music primero; si no está reproduciendo, prueba Spotify.
  * Notifica a los listeners cuando cambia la canción o el estado de play.
  */
 import { platform } from 'os';
@@ -13,29 +13,30 @@ import {
   smtcControl,
 } from './smtc-windows';
 import { getAppleMusicInfo, appleMusicControl } from './apple-music-mac';
+import { getSpotifyInfo, spotifyControl } from './spotify-mac';
 
 type ChangeCallback = (info: MediaInfo | null) => void;
+type MacSource = 'Apple Music' | 'Spotify' | null;
 
 class MediaManager {
   private current: MediaInfo | null = null;
   private listeners: ChangeCallback[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly isWindows = platform() === 'win32';
+  /** Última fuente activa en Mac — determina a qué app enviar controles */
+  private macSource: MacSource = null;
 
   onMediaChange(cb: ChangeCallback): void {
     this.listeners.push(cb);
   }
 
-  /** Inicia el proceso de lectura de media */
   start(intervalMs = 500): void {
     if (this.timer) return;
 
     if (this.isWindows) {
-      // Arranca el proceso PowerShell persistente
       startSmtcLoop();
     }
 
-    // Tick que comprueba el estado (en Windows solo lee el caché, muy barato)
     this.timer = setInterval(() => void this.tick(), intervalMs);
   }
 
@@ -47,23 +48,49 @@ class MediaManager {
   getCurrent(): MediaInfo | null { return this.current; }
 
   async control(action: ControlAction): Promise<void> {
-    if (this.isWindows) await smtcControl(action);
-    else                await appleMusicControl(action);
+    if (this.isWindows) {
+      await smtcControl(action);
+    } else {
+      // Controlar la fuente que está activa actualmente
+      if (this.macSource === 'Spotify') await spotifyControl(action);
+      else                               await appleMusicControl(action);
+    }
+  }
+
+  private async getMacMedia(): Promise<MediaInfo | null> {
+    // Prueba Apple Music primero
+    const am = await getAppleMusicInfo();
+    if (am?.isPlaying) {
+      this.macSource = 'Apple Music';
+      return am;
+    }
+
+    // Prueba Spotify
+    const sp = await getSpotifyInfo();
+    if (sp?.isPlaying) {
+      this.macSource = 'Spotify';
+      return sp;
+    }
+
+    // Ninguna está reproduciendo — devuelve la que esté pausada (si la hay)
+    if (am) { this.macSource = 'Apple Music'; return am; }
+    if (sp) { this.macSource = 'Spotify';     return sp; }
+
+    this.macSource = null;
+    return null;
   }
 
   private async tick(): Promise<void> {
     const next = this.isWindows
-      ? getSmtcCurrentMedia()           // lectura desde caché — O(1)
-      : await getAppleMusicInfo();      // AppleScript — async
+      ? getSmtcCurrentMedia()
+      : await this.getMacMedia();
 
     if (this.hasChanged(next)) {
       this.current = next;
       this.notify(next);
     } else if (next && this.current) {
-      // Actualizar posición siempre (SmtcNative lee a 200 ms, posición cambia constantemente)
       if (next.position !== this.current.position) {
         this.current = next;
-        // No notificar listeners por cambio de posición solo (evita re-búsqueda de letras)
       }
     }
   }
