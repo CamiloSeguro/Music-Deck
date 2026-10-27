@@ -8,4 +8,7 @@
     <!-- Corre en cualquier .NET >= 8 instalado (8, 9, 10...) -->
     <RollForward>Major</RollForward>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
 </Project>

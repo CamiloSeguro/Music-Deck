@@ -115,3 +115,12 @@ export async function spotifyControl(action: ControlAction): Promise<void> {
     // silencioso
   }
 }
+
+/** Adelanta/atrasa la canción `seconds` segundos. */
+export async function spotifySeekBy(seconds: number): Promise<void> {
+  try {
+    await runScript(`tell application "Spotify" to set player position to (player position + (${seconds}))`);
+  } catch {
+    // silencioso
+  }
+}

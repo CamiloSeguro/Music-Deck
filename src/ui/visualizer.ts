@@ -21,6 +21,21 @@ export function createVisualizer(): VisualizerState {
   };
 }
 
+/**
+ * Con espectro real (bandas 0–1 de SmtcNative): las barras suben rápido y bajan
+ * más despacio, como un vúmetro, para que no tiemblen.
+ */
+export function updateVisualizerFromSpectrum(state: VisualizerState, bands: number[]): VisualizerState {
+  const now = Date.now();
+  const dt  = Math.min((now - state.lastMs) / 1000, 0.15);
+  const bars = state.bars.map((b, i) => {
+    const target = bands[Math.floor(i * bands.length / BAR_COUNT)] ?? 0;
+    const speed  = target > b ? 18 : 5;   // ataque / caída (por segundo)
+    return b + (target - b) * Math.min(1, speed * dt);
+  });
+  return { bars, targets: bars, lastMs: now };
+}
+
 export function updateVisualizer(state: VisualizerState, isPlaying: boolean): VisualizerState {
   const now = Date.now();
   const dt  = Math.min((now - state.lastMs) / 1000, 0.15);  // clamp a 150 ms

@@ -92,6 +92,11 @@ let thumbnail: string | null = null;   // última portada recibida (v2 solo la m
 let retryMs    = RETRY_MIN_MS;
 let lastExit   = '';  // último mensaje de salida, para no repetirlo en el log
 
+let spectrumWanted = false;            // el plugin quiere el espectro (hay un visualizador visible)
+let spectrumBands: number[] | null = null;
+let spectrumAt     = 0;
+const volumeWaiters: ((level: number | null) => void)[] = [];
+
 // ─── Build helper ─────────────────────────────────────────────────────────────
 
 function buildExe(): Promise<void> {
@@ -215,6 +220,15 @@ function handleLine(raw: string): void {
     retryMs  = RETRY_MIN_MS;
     lastExit = '';
     smtcLog(`SmtcNative listo (protocolo ${protocol})`);
+    if (spectrumWanted) sendCommand('spectrum on');   // el exe se relanzó: volver a pedirlo
+  } else if (status === 'spectrum') {
+    if (Array.isArray(data['bands'])) {
+      spectrumBands = (data['bands'] as unknown[]).map(Number);
+      spectrumAt    = Date.now();
+    }
+  } else if (status === 'volume') {
+    const level = Number(data['level']);
+    for (const resolve of volumeWaiters.splice(0)) resolve(Number.isNaN(level) ? null : level);
   } else if (status === 'ok') {
     if (protocol < 2) { retryMs = RETRY_MIN_MS; lastExit = ''; }
     // v1 no manda thumbChanged → la portada viene en cada línea
@@ -242,23 +256,60 @@ function handleLine(raw: string): void {
 
 // ─── Control de reproducción ──────────────────────────────────────────────────
 
-export function smtcControl(action: ControlAction): Promise<void> {
-  // v2: mandar el comando al proceso que ya está corriendo (sin arrancar .NET de nuevo)
+/** v2: manda un comando al proceso que ya está corriendo. false si no se pudo. */
+function sendCommand(command: string): boolean {
   if (protocol >= 2 && loopProc?.stdin?.writable) {
-    loopProc.stdin.write(`${action}\n`);
-    return Promise.resolve();
+    loopProc.stdin.write(`${command}\n`);
+    return true;
   }
+  return false;
+}
 
+export function smtcControl(action: ControlAction): Promise<void> {
+  // v2: sin arrancar .NET de nuevo; v1: un proceso por comando
+  if (sendCommand(action)) return Promise.resolve();
+  return runControlProcess([action]);
+}
+
+export function smtcSeekBy(seconds: number): Promise<void> {
+  const arg = seconds.toFixed(2);
+  if (sendCommand(`seekBy ${arg}`)) return Promise.resolve();
+  return runControlProcess(['seekBy', arg]);
+}
+
+/** Cambia el volumen del sistema; resuelve con el nivel nuevo (0–1), o null si no hubo respuesta. */
+export function smtcVolumeBy(delta: number): Promise<number | null> {
+  return new Promise((resolve) => {
+    if (!sendCommand(`volumeBy ${delta.toFixed(3)}`)) { resolve(null); return; }
+    const timer = setTimeout(() => {
+      const i = volumeWaiters.indexOf(done);
+      if (i >= 0) volumeWaiters.splice(i, 1);
+      resolve(null);
+    }, 1_000);
+    function done(level: number | null): void { clearTimeout(timer); resolve(level); }
+    volumeWaiters.push(done);
+  });
+}
+
+/** Activa/desactiva la captura de audio para el visualizador (solo si cambia). */
+export function smtcSetSpectrum(on: boolean): void {
+  if (on === spectrumWanted) return;
+  spectrumWanted = on;
+  if (!on) spectrumBands = null;
+  sendCommand(on ? 'spectrum on' : 'spectrum off');
+}
+
+/** Bandas del espectro (0–1) si llegaron hace poco; null si no hay datos. */
+export function getSmtcSpectrum(): number[] | null {
+  return spectrumBands && Date.now() - spectrumAt < 500 ? spectrumBands : null;
+}
+
+function runControlProcess(args: string[]): Promise<void> {
   return new Promise<void>((resolve) => {
     const exePath = findExe();
     if (!exePath) { resolve(); return; }
 
-    const ctrl = execFile(
-      exePath,
-      [action],
-      { timeout: 5000 },
-      () => resolve(),
-    );
+    const ctrl = execFile(exePath, args, { timeout: 5000 }, () => resolve());
     ctrl.on('error', () => resolve());
   });
 }

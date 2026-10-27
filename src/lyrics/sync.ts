@@ -23,6 +23,21 @@ export interface LyricsWindow {
   next:     string;
 }
 
+/**
+ * Qué tanto de la línea `idx` ya se cantó (0–1), para el efecto karaoke.
+ * LRCLIB solo da el inicio de cada línea, así que se estima: la línea se canta
+ * en ~0.35 s por palabra (mín. 1.5 s), sin pasar del inicio de la siguiente.
+ * Así una línea seguida de un instrumental largo no se llena a cámara lenta.
+ */
+export function lineProgress(lyrics: LyricLine[], idx: number, position: number): number {
+  if (idx < 0 || idx >= lyrics.length) return 0;
+  const start = lyrics[idx].time;
+  const gap   = idx + 1 < lyrics.length ? lyrics[idx + 1].time - start : Infinity;
+  const words = lyrics[idx].text.split(/\s+/).filter(Boolean).length;
+  const sung  = Math.min(gap, Math.max(1.5, words * 0.35));
+  return Math.min(1, Math.max(0, (position - start) / sung));
+}
+
 /** Devuelve la línea anterior, actual y siguiente */
 export function lyricsWindow(lyrics: LyricLine[], position: number): LyricsWindow {
   const idx = currentLyricIndex(lyrics, position);

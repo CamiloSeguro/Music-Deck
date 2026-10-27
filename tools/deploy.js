@@ -8,7 +8,7 @@
  * bin/ se reemplaza completo (para no dejar archivos viejos); imgs/ y scripts/
  * se mezclan, así no se borra un SmtcNative.exe ya compilado en el destino.
  */
-const { cpSync, existsSync, rmSync } = require('fs');
+const { cpSync, existsSync, rmSync, statSync } = require('fs');
 const { join }     = require('path');
 const { homedir }  = require('os');
 const { execSync } = require('child_process');
@@ -39,7 +39,8 @@ const stoppedPid = restart && isWin ? stopWindows() : '';
 try {
   cpSync(join(SRC, 'scripts'), join(DEST, 'scripts'), {
     recursive: true,
-    filter: (p) => !/[\\/]SmtcNative[\\/]obj([\\/]|$)/.test(p),
+    // Saltar obj/ y archivos sin cambios (copiar un exe/dll en uso falla en Windows)
+    filter: (src, dest) => !/[\\/]SmtcNative[\\/]obj([\\/]|$)/.test(src) && !unchanged(src, dest),
   });
 } catch (err) {
   console.error(`No se pudo copiar scripts/ (¿SmtcNative.exe en uso? usa --restart): ${err.message}`);
@@ -49,6 +50,7 @@ cpSync(join(SRC, 'bin'), join(DEST, 'bin'), { recursive: true });
 cpSync(join(SRC, 'manifest.json'), join(DEST, 'manifest.json'));
 cpSync(join(SRC, 'package.json'),  join(DEST, 'package.json'));
 cpSync(join(SRC, 'imgs'),    join(DEST, 'imgs'),    { recursive: true });
+cpSync(join(SRC, 'propertyInspector'), join(DEST, 'propertyInspector'), { recursive: true });
 console.log(`Copiado a ${DEST}`);
 
 if (!existsSync(join(DEST, 'node_modules'))) {
@@ -65,6 +67,16 @@ if (restart) {
     }
   } catch (err) {
     console.error('No se pudo reiniciar el plugin:', err.message);
+  }
+}
+
+/** Mismo tamaño y no más nuevo que el destino → no hace falta copiarlo. */
+function unchanged(src, dest) {
+  try {
+    const s = statSync(src), d = statSync(dest);
+    return s.isFile() && s.size === d.size && s.mtimeMs <= d.mtimeMs;
+  } catch {
+    return false;
   }
 }
 

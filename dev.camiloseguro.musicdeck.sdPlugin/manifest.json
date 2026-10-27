@@ -17,6 +17,7 @@
       "Tooltip": "Cuadrante superior-izquierdo de la portada del álbum. Coloca los 4 tiles juntos para ver la portada completa.",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     },
     {
@@ -26,6 +27,7 @@
       "Tooltip": "Cuadrante superior-derecho de la portada del álbum.",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     },
     {
@@ -35,6 +37,7 @@
       "Tooltip": "Cuadrante inferior-izquierdo de la portada del álbum.",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     },
     {
@@ -44,6 +47,7 @@
       "Tooltip": "Cuadrante inferior-derecho de la portada del álbum.",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     },
     {
@@ -53,6 +57,7 @@
       "Tooltip": "Reproduce o pausa la canción actual",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": true
     },
     {
@@ -62,6 +67,7 @@
       "Tooltip": "Salta a la siguiente canción",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": true
     },
     {
@@ -71,6 +77,7 @@
       "Tooltip": "Vuelve a la canción anterior",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": true
     },
     {
@@ -80,6 +87,7 @@
       "Tooltip": "Muestra el título de la canción actual",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     },
     {
@@ -89,6 +97,7 @@
       "Tooltip": "Muestra el artista de la canción actual",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     },
     {
@@ -98,6 +107,7 @@
       "Tooltip": "Muestra la posición y duración de la canción actual",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     },
     {
@@ -107,6 +117,7 @@
       "Tooltip": "Letra sincronizada de la canción actual (vía LRCLIB): línea anterior, actual y siguiente",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     },
     {
@@ -116,6 +127,7 @@
       "Tooltip": "Ponla en los 4 knobs: la letra se ve como una sola barra a lo ancho de la pantalla",
       "Controllers": ["Knob"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     },
     {
@@ -125,6 +137,7 @@
       "Tooltip": "Barras animadas mientras suena música",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "PropertyInspectorPath": "propertyInspector/index.html",
       "SupportedInMultiActions": false
     }
   ],

@@ -6,17 +6,24 @@
  *   playpause / next / previous → controles
  *   title / artist / duration   → info de la canción
  *   lyrics                      → letra sincronizada (anterior / actual / siguiente)
- *   visualizer                  → barras animadas
+ *   lyricsbar                   → letra en la barra de los 4 knobs; los knobs controlan:
+ *                                   presionar → play/pausa
+ *                                   girar knob 0–1 → adelantar/atrasar
+ *                                   girar knob 2–3 → volumen
+ *   visualizer                  → barras con el espectro real del audio (Windows)
  */
 
 import { sd }           from './streamdock';
 import { mediaManager } from './providers/media-manager';
 import { log }          from './log';
-import { renderKey, renderSignature, type RenderExtras } from './ui/canvas-renderer';
+import { applySettings, getSettings } from './settings';
+import { renderKey, renderSignature, type BarOverlay, type RenderExtras } from './ui/canvas-renderer';
 import { fetchLyrics }  from './lyrics/lrclib';
-import { currentLyricIndex, lyricsWindow } from './lyrics/sync';
-import { createVisualizer, updateVisualizer } from './ui/visualizer';
+import { currentLyricIndex, lineProgress, lyricsWindow } from './lyrics/sync';
+import { createVisualizer, updateVisualizer, updateVisualizerFromSpectrum } from './ui/visualizer';
 import type { ControlAction, LyricLine, MediaInfo } from './types';
+
+const ID = 'dev.camiloseguro.musicdeck.';
 
 // ─── Estado ───────────────────────────────────────────────────────────────────
 
@@ -42,10 +49,20 @@ let lyricsRetryAt = 0;
 const LYRICS_MAX_TRIES   = 3;
 const LYRICS_RETRY_MS    = 20_000;
 
+/** Aviso en la barra de knobs (seek/volumen) y hasta cuándo se muestra */
+let overlay: BarOverlay | null = null;
+let overlayUntil = 0;
+const OVERLAY_MS = 1_200;
+
 // ─── Letras ───────────────────────────────────────────────────────────────────
 
 function isLyricsAction(actionId: string): boolean {
   return /\.lyrics(bar)?$/.test(actionId);
+}
+
+function hasAction(suffix: string): boolean {
+  for (const k of keys.values()) if (k.actionId === `${ID}${suffix}`) return true;
+  return false;
 }
 
 function needsLyrics(): boolean {
@@ -80,14 +97,19 @@ function syncLyrics(media: MediaInfo | null): void {
 }
 
 function buildExtras(media: MediaInfo | null): RenderExtras {
-  const pos = media?.position ?? 0;
+  // Adelanto configurable: compensa lo que tarda la imagen en llegar a la pantalla
+  const pos = (media?.position ?? 0) + getSettings().lyricsOffsetMs / 1000;
+  const idx = currentLyricIndex(lyrics, pos);
+  if (overlay && Date.now() > overlayUntil) overlay = null;
   return {
     lyrics: {
-      status: lyricsStatus,
-      index:  currentLyricIndex(lyrics, pos),
-      window: lyricsWindow(lyrics, pos),
+      status:   lyricsStatus,
+      index:    idx,
+      window:   lyricsWindow(lyrics, pos),
+      progress: lineProgress(lyrics, idx, pos),
     },
     bars: viz.bars,
+    overlay,
   };
 }
 
@@ -107,7 +129,9 @@ async function renderOne(ctx: string, state: KeyState, media: MediaInfo | null, 
   }
 }
 
-// ─── Loop de render (250 ms) ──────────────────────────────────────────────────
+// ─── Loop de render (100 ms) ──────────────────────────────────────────────────
+// Rápido para que la letra cambie a tiempo y el karaoke/visualizador se vean
+// fluidos; solo se redibujan los botones cuya firma cambió.
 
 let _tick     = 0;
 let rendering = false;
@@ -118,21 +142,84 @@ setInterval(async () => {
   try {
     const media = mediaManager.getCurrent();
     _tick++;
-    if (_tick % 240 === 1) {   // cada ~60 s
+    if (_tick % 600 === 1) {   // cada ~60 s
       log(`tick media=${media ? `"${media.title}" playing=${String(media.isPlaying)}` : 'null'} keys=${keys.size}`);
     }
 
     syncLyrics(media);
-    viz = updateVisualizer(viz, media?.isPlaying ?? false);
+    const spectrum = mediaManager.getSpectrum();
+    viz = spectrum && media?.isPlaying !== false
+      ? updateVisualizerFromSpectrum(viz, spectrum)
+      : updateVisualizer(viz, media?.isPlaying ?? false);
     const extras = buildExtras(media);
 
     await Promise.all([...keys].map(([ctx, state]) => renderOne(ctx, state, media, extras)));
   } finally {
     rendering = false;
   }
-}, 250);
+}, 100);
+
+/** Captura de audio solo mientras haya un visualizador en pantalla. */
+function updateSpectrum(): void {
+  mediaManager.setSpectrum(hasAction('visualizer'));
+}
+
+// ─── Knobs ────────────────────────────────────────────────────────────────────
+
+// Los clics de un giro rápido se juntan en un solo comando (SMTC no da abasto con
+// uno por clic y la canción saltaría a tirones).
+const DIAL_BATCH_MS = 150;
+let seekTicks = 0;
+let volTicks  = 0;
+let dialTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onDialRotate(column: number, ticks: number): void {
+  if (column <= 1) seekTicks += ticks;
+  else             volTicks  += ticks;
+  if (!dialTimer) dialTimer = setTimeout(flushDial, DIAL_BATCH_MS);
+}
+
+function flushDial(): void {
+  dialTimer = null;
+  const s = getSettings();
+
+  if (seekTicks !== 0) {
+    const seconds = seekTicks * s.seekStep;
+    seekTicks = 0;
+    // Se acumula mientras el aviso sigue visible: "Adelantar +15 s" al girar 3 clics
+    const prev = overlay?.kind === 'seek' && Date.now() < overlayUntil ? overlay.seconds : 0;
+    showOverlay({ kind: 'seek', seconds: prev + seconds });
+    void mediaManager.seekBy(seconds);
+  }
+
+  if (volTicks !== 0) {
+    const delta = (volTicks * s.volumeStep) / 100;
+    volTicks = 0;
+    void mediaManager.volumeBy(delta).then((level) => {
+      if (level !== null) showOverlay({ kind: 'volume', level });
+    });
+  }
+}
+
+function showOverlay(o: BarOverlay): void {
+  overlay      = o;
+  overlayUntil = Date.now() + OVERLAY_MS;
+}
 
 // ─── Eventos StreamDock ───────────────────────────────────────────────────────
+
+sd.on('connected', () => sd.getGlobalSettings());
+
+sd.on('didReceiveGlobalSettings', ({ payload }) => {
+  const settings = applySettings(payload?.['settings']);
+  log(`ajustes: ${JSON.stringify(settings)}`);
+});
+
+// El Property Inspector también manda los ajustes directo (por si el software no
+// reenvía didReceiveGlobalSettings al plugin cuando el PI los guarda)
+sd.on('sendToPlugin', ({ payload }) => {
+  if (payload?.['type'] === 'settings') applySettings(payload['settings']);
+});
 
 sd.on('willAppear', async ({ action, context, payload }) => {
   if (!context || !action) return;
@@ -140,6 +227,7 @@ sd.on('willAppear', async ({ action, context, payload }) => {
   const coords = payload?.['coordinates'] as { column?: number } | undefined;
   const state: KeyState = { actionId: action, column: coords?.column ?? 0, lastSig: '' };
   keys.set(context, state);
+  updateSpectrum();
   // Un botón de letra nuevo → buscar letra de la canción actual si no se había buscado
   if (isLyricsAction(action) && lyricsStatus === 'none' && lyricsTries === 0) lyricsFor = '';
   const media = mediaManager.getCurrent();
@@ -150,6 +238,7 @@ sd.on('willAppear', async ({ action, context, payload }) => {
 sd.on('willDisappear', ({ context }) => {
   if (!context) return;
   keys.delete(context);
+  updateSpectrum();
   log(`willDisappear ctx=${context}`);
 });
 
@@ -157,13 +246,24 @@ sd.on('keyUp', async ({ action }) => {
   if (!action) return;
 
   const controlMap: Record<string, ControlAction> = {
-    'dev.camiloseguro.musicdeck.playpause': 'togglePlay',
-    'dev.camiloseguro.musicdeck.next':      'next',
-    'dev.camiloseguro.musicdeck.previous':  'previous',
+    [`${ID}playpause`]: 'togglePlay',
+    [`${ID}next`]:      'next',
+    [`${ID}previous`]:  'previous',
   };
 
   const ctrl = controlMap[action];
   if (ctrl) await mediaManager.control(ctrl);
+});
+
+sd.on('dialDown', async ({ action }) => {
+  if (action === `${ID}lyricsbar`) await mediaManager.control('togglePlay');
+});
+
+sd.on('dialRotate', ({ action, context, payload }) => {
+  if (action !== `${ID}lyricsbar` || !context) return;
+  const ticks = Number(payload?.['ticks'] ?? 0);
+  const state = keys.get(context);
+  if (state && ticks) onDialRotate(state.column, ticks);
 });
 
 // ─── Arranque ─────────────────────────────────────────────────────────────────

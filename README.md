@@ -10,9 +10,12 @@ Soporta **Apple Music**, **Spotify**, **Chrome/Edge** y cualquier app compatible
 - **Controles**: play/pause, siguiente, anterior.
 - **Información de la canción**: título, artista, y posición/duración.
 - **Duración**: posición, duración total y barra de progreso.
-- **Letras sincronizadas** vía [LRCLIB](https://lrclib.net/): botón con la línea anterior, la actual y la siguiente.
-- **Letra en la barra de knobs** (VSD N4 Pro): pon "Letra (barra de knobs)" en los 4 knobs y la letra se ve como una sola barra a lo ancho de la pantalla (4 segmentos de 200×100).
-- **Visualizador de barras** animado mientras se reproduce música.
+- **Letras sincronizadas** vía [LRCLIB](https://lrclib.net/): botón con la línea anterior, la actual y la siguiente. Se guardan en disco (`cache/lyrics.json`), así las canciones ya escuchadas no dependen de LRCLIB.
+- **Letra en la barra de knobs** (VSD N4 Pro): pon "Letra (barra de knobs)" en los 4 knobs y la letra se ve como una sola barra a lo ancho de la pantalla (4 segmentos de 200×100), sin partir palabras entre pantallas y con **efecto karaoke**.
+- **Knobs** (con la barra de letra puesta): presionar → play/pausa · girar knobs 1–2 → adelantar/atrasar · girar knobs 3–4 → volumen del sistema.
+- **Visualizador** con el **espectro real** del audio del sistema (Windows, captura WASAPI); en macOS es simulado.
+- **Color de acento** sacado de la portada de cada canción (o uno fijo).
+- **Ajustes** en VSD Craft (al seleccionar cualquier botón del plugin): adelanto de la letra, tamaño, siguiente línea, karaoke, color, y pasos de los knobs.
 
 ### Fuentes de reproducción
 
@@ -33,6 +36,7 @@ Music-Deck/
 │   ├── streamdock.ts                 # Cliente WebSocket del protocolo StreamDock
 │   ├── types.ts                      # Tipos compartidos (MediaInfo, LyricLine, etc.)
 │   ├── log.ts                        # debug.log con tamaño máximo (rota a 5 MB)
+│   ├── settings.ts                   # Ajustes globales (Property Inspector)
 │   ├── providers/                    # Integraciones por plataforma/app
 │   │   ├── smtc-windows.ts           # Windows: lee el caché de SmtcNative.exe
 │   │   ├── apple-music-mac.ts        # macOS: Apple Music vía AppleScript
@@ -62,7 +66,7 @@ Music-Deck/
 
 - [Node.js](https://nodejs.org/) 20+
 - [HotSpot StreamDock](https://www.hotspot-tech.com/) instalado
-- En Windows: [.NET SDK](https://dotnet.microsoft.com/) 8/10 para compilar `SmtcNative`
+- En Windows: [.NET SDK](https://dotnet.microsoft.com/) 8+ para compilar `SmtcNative` (usa el paquete NuGet NAudio para el volumen y el visualizador)
 - En macOS: permisos de Automatización para que StreamDock controle Apple Music/Spotify vía AppleScript
 
 ## Instalación y build
@@ -79,6 +83,9 @@ npm run watch
 
 # Compila, copia el plugin a StreamDock y lo reinicia
 npm run deploy
+
+# Tests (letras, sincronización, reparto entre knobs, ajustes...)
+npm test
 ```
 
 En Windows, además hay que compilar el binario nativo que lee SMTC y busca letras:

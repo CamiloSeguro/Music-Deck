@@ -121,3 +121,29 @@ export async function appleMusicControl(action: ControlAction): Promise<void> {
     // silencioso
   }
 }
+
+/** Adelanta/atrasa la canción `seconds` segundos. */
+export async function appleMusicSeekBy(seconds: number): Promise<void> {
+  try {
+    await runScript(`tell application "Music" to set player position to (player position + (${seconds}))`);
+  } catch {
+    // silencioso
+  }
+}
+
+/** Cambia el volumen de salida del sistema (delta −1…1) y devuelve el nivel nuevo (0–1). */
+export async function macVolumeBy(delta: number): Promise<number | null> {
+  try {
+    const out = await runScript(`
+      set v to (output volume of (get volume settings)) + (${Math.round(delta * 100)})
+      if v < 0 then set v to 0
+      if v > 100 then set v to 100
+      set volume output volume v
+      return v
+    `);
+    const level = Number(out);
+    return Number.isNaN(level) ? null : level / 100;
+  } catch {
+    return null;
+  }
+}

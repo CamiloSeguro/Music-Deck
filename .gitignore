@@ -7,3 +7,5 @@ dev.camiloseguro.musicdeck.sdPlugin/bin/
 debug.log
 dev.camiloseguro.musicdeck.sdPlugin/scripts/SmtcNative/obj/
 dev.camiloseguro.musicdeck.sdPlugin/scripts/SmtcNative/bin/
+.test-build/
+dev.camiloseguro.musicdeck.sdPlugin/cache/

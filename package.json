@@ -7,7 +7,8 @@
     "build": "tsc",
     "watch": "tsc --watch",
     "deploy": "tsc && node tools/deploy.js --restart",
-    "setup": "npm install && cd dev.camiloseguro.musicdeck.sdPlugin && npm install"
+    "setup": "npm install && cd dev.camiloseguro.musicdeck.sdPlugin && npm install",
+    "test": "tsc -p tsconfig.test.json && node --test \".test-build/test/*.test.js\""
   },
   "devDependencies": {
     "@napi-rs/canvas": "^0.1.97",

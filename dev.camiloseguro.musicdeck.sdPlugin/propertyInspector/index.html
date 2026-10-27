@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Music Deck</title>
+<style>
+  :root {
+    --bg: #2d2d2d; --field: #3d3d3d; --text: #d8d8d8; --dim: #969696; --accent: #e03030;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px 14px; background: var(--bg); color: var(--text);
+    font: 12px/1.4 -apple-system, "Segoe UI", Arial, sans-serif;
+  }
+  h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--dim); margin: 16px 0 8px; }
+  h2:first-child { margin-top: 0; }
+  .row { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; margin: 6px 0; }
+  .row label { color: var(--dim); }
+  select, input[type=number] {
+    width: 100%; background: var(--field); color: var(--text); border: 1px solid #4a4a4a;
+    border-radius: 3px; padding: 4px 6px; font: inherit;
+  }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=checkbox] { accent-color: var(--accent); }
+  input[type=color] { width: 40px; height: 24px; border: none; padding: 0; background: none; }
+  .inline { display: flex; align-items: center; gap: 8px; }
+  .value { min-width: 56px; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+  .hint { color: var(--dim); font-size: 11px; margin: 2px 0 0 118px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <h2>Letra</h2>
+  <div class="row">
+    <label for="lyricsOffsetMs">Adelanto</label>
+    <div class="inline">
+      <input type="range" id="lyricsOffsetMs" min="-1000" max="1000" step="50">
+      <span class="value" id="lyricsOffsetMsValue"></span>
+    </div>
+  </div>
+  <div class="hint">Si la letra va tarde, súbelo; si va antes, bájalo.</div>
+  <div class="row">
+    <label for="lyricsSize">Tamaño</label>
+    <select id="lyricsSize">
+      <option value="small">Pequeño</option>
+      <option value="medium">Mediano</option>
+      <option value="large">Grande</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="showNextLine">Siguiente línea</label>
+    <div class="inline"><input type="checkbox" id="showNextLine"> <span>Mostrar debajo</span></div>
+  </div>
+  <div class="row">
+    <label for="karaoke">Karaoke</label>
+    <div class="inline"><input type="checkbox" id="karaoke"> <span>Colorear lo ya cantado</span></div>
+  </div>
+
+  <h2>Color</h2>
+  <div class="row">
+    <label for="accentMode">Acento</label>
+    <select id="accentMode">
+      <option value="cover">De la portada</option>
+      <option value="fixed">Fijo</option>
+    </select>
+  </div>
+  <div class="row" id="accentColorRow">
+    <label for="accentColor">Color fijo</label>
+    <input type="color" id="accentColor">
+  </div>
+
+  <h2>Knobs</h2>
+  <div class="row">
+    <label for="seekStep">Adelantar/atrasar</label>
+    <select id="seekStep">
+      <option value="5">5 s por clic</option>
+      <option value="10">10 s por clic</option>
+      <option value="15">15 s por clic</option>
+      <option value="30">30 s por clic</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="volumeStep">Volumen</label>
+    <select id="volumeStep">
+      <option value="1">1% por clic</option>
+      <option value="2">2% por clic</option>
+      <option value="5">5% por clic</option>
+    </select>
+  </div>
+  <div class="hint">Knobs 1–2: adelantar/atrasar · Knobs 3–4: volumen · Presionar: play/pausa</div>
+
+<script>
+  // Mismos valores por defecto que src/settings.ts
+  const DEFAULTS = {
+    lyricsOffsetMs: 200, lyricsSize: 'medium', showNextLine: true, karaoke: true,
+    accentMode: 'cover', accentColor: '#e03030', seekStep: 5, volumeStep: 2,
+  };
+  const NUMERIC = ['lyricsOffsetMs', 'seekStep', 'volumeStep'];
+
+  let ws = null, uuid = '', action = '', context = '';
+  let settings = { ...DEFAULTS };
+
+  // VSD Craft llama a esta función al abrir el panel (mismo protocolo que Elgato)
+  function connectElgatoStreamDeckSocket(port, inUUID, registerEvent, info, actionInfo) {
+    uuid = inUUID;
+    try { const a = JSON.parse(actionInfo); action = a.action; context = a.context; } catch (_) {}
+    ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    ws.onopen = () => {
+      send({ event: registerEvent, uuid });
+      send({ event: 'getGlobalSettings', context: uuid });
+    };
+    ws.onmessage = ({ data }) => {
+      const msg = JSON.parse(data);
+      if (msg.event === 'didReceiveGlobalSettings') {
+        settings = { ...DEFAULTS, ...(msg.payload && msg.payload.settings) };
+        render();
+      }
+    };
+  }
+
+  function send(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  }
+
+  function save() {
+    send({ event: 'setGlobalSettings', context: uuid, payload: settings });
+    // Aviso directo al plugin para que aplique los cambios al instante
+    send({ event: 'sendToPlugin', action, context, payload: { type: 'settings', settings } });
+  }
+
+  function render() {
+    for (const [key, value] of Object.entries(settings)) {
+      const el = document.getElementById(key);
+      if (!el) continue;
+      if (el.type === 'checkbox') el.checked = !!value;
+      else el.value = String(value);
+    }
+    const ms = Number(settings.lyricsOffsetMs);
+    document.getElementById('lyricsOffsetMsValue').textContent = `${ms > 0 ? '+' : ''}${ms} ms`;
+    document.getElementById('accentColorRow').classList.toggle('hidden', settings.accentMode !== 'fixed');
+  }
+
+  for (const key of Object.keys(DEFAULTS)) {
+    const el = document.getElementById(key);
+    if (!el) continue;
+    // El slider guarda al soltar; mientras se arrastra solo actualiza el número
+    const evt = el.type === 'range' ? 'change' : (el.type === 'color' ? 'change' : 'input');
+    el.addEventListener(evt, () => {
+      settings[key] = el.type === 'checkbox' ? el.checked
+        : NUMERIC.includes(key) ? Number(el.value) : el.value;
+      render();
+      save();
+    });
+    if (el.type === 'range') {
+      el.addEventListener('input', () => {
+        settings[key] = Number(el.value);
+        render();
+      });
+    }
+  }
+
+  render();
+</script>
+</body>
+</html>

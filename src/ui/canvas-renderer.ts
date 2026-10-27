@@ -17,15 +17,25 @@ import { createCanvas, loadImage, type Canvas, type Image } from '@napi-rs/canva
 import type { SKRSContext2D } from '@napi-rs/canvas';
 import type { MediaInfo } from '../types';
 import type { LyricsWindow } from '../lyrics/sync';
+import { getSettings, settingsVersion } from '../settings';
+import { pickAccent } from './accent';
+import { karaokeFill, partitionWords } from './segment-layout';
 
 const ID = 'dev.camiloseguro.musicdeck.';
 
+/** Aviso temporal en la barra de knobs al girarlos. */
+export type BarOverlay =
+  | { kind: 'seek';   seconds: number }
+  | { kind: 'volume'; level: number };
+
 /** Datos extra (fuera de MediaInfo) que necesitan algunos botones. */
 export interface RenderExtras {
-  /** Letra de la canción actual: buscando, no encontrada, o línea activa */
-  lyrics:     { status: 'loading' | 'none' | 'ok'; index: number; window: LyricsWindow };
+  /** Letra de la canción actual: buscando, no encontrada, o línea activa (+ avance del karaoke 0–1) */
+  lyrics:     { status: 'loading' | 'none' | 'ok'; index: number; window: LyricsWindow; progress: number };
   /** Alturas 0–1 del visualizador */
   bars:       number[];
+  /** Aviso a mostrar en la barra de knobs en lugar de la letra */
+  overlay:    BarOverlay | null;
 }
 
 const KW = 144;
@@ -33,13 +43,23 @@ const KH = 144;
 
 const C = {
   bg:      '#111111',
-  accent:  '#e03030',
+  /** Color de acento: el de la portada o el fijo, según los ajustes */
+  get accent(): string { return accentNow(); },
   text:    '#ffffff',
   dim:     '#aaaaaa',
   dimDark: '#555555',
   label:   '#666666',
   progBg:  '#2a2a2a',
 };
+
+const DEFAULT_ACCENT = '#e03030';
+let coverAccent: string | null = null;   // calculado al decodificar cada portada
+
+function accentNow(): string {
+  const s = getSettings();
+  if (s.accentMode === 'fixed') return s.accentColor;
+  return coverAccent ?? DEFAULT_ACCENT;
+}
 
 type Ctx = SKRSContext2D;
 
@@ -60,7 +80,7 @@ export async function renderKey(
   if (actionId === `${ID}artist`)     return renderArtistKey(media);
   if (actionId === `${ID}duration`)   return renderDurationKey(media);
   if (actionId === `${ID}lyrics`)     return renderLyricsKey(media, extras.lyrics);
-  if (actionId === `${ID}lyricsbar`)  return renderLyricsBarSegment(column, media, extras.lyrics);
+  if (actionId === `${ID}lyricsbar`)  return renderLyricsBarSegment(column, media, extras);
   if (actionId === `${ID}visualizer`) return renderVisualizerKey(extras.bars);
   return renderControlKey(actionId, media);
 }
@@ -73,15 +93,20 @@ export function renderSignature(
 ): string {
   const thumb = thumbId(media);
   if (actionId.startsWith(`${ID}albumart.`)) return `art|${thumb}`;
-  if (!media && actionId !== `${ID}visualizer`) return 'empty';
+  // El resto usa el color de acento y los ajustes: si cambian, hay que redibujar
+  return `${accentNow()}|${settingsVersion()}|${contentSignature(actionId, media, extras, thumb)}`;
+}
+
+function contentSignature(actionId: string, media: MediaInfo | null, extras: RenderExtras, thumb: number): string {
+  if (actionId === `${ID}lyricsbar`)  return `lb|${barSignature(media, extras)}`;
+  if (actionId === `${ID}visualizer`) return `v|${extras.bars.map(b => Math.round(b * 60)).join(',')}`;
+  if (!media) return 'empty';
   switch (actionId) {
-    case `${ID}title`:      return `t|${media!.title}`;
-    case `${ID}artist`:     return `a|${media!.artist}|${media!.album}`;
-    case `${ID}duration`:   return `d|${Math.floor(media!.position)}|${Math.floor(media!.duration)}`;
-    case `${ID}lyrics`:
-    case `${ID}lyricsbar`:  return `l|${media!.title}|${extras.lyrics.status}|${extras.lyrics.index}`;
-    case `${ID}visualizer`: return `v|${extras.bars.map(b => Math.round(b * 60)).join(',')}`;
-    default:                return `c|${String(media!.isPlaying)}|${media!.title}|${media!.artist}|${thumb}`;
+    case `${ID}title`:      return `t|${media.title}`;
+    case `${ID}artist`:     return `a|${media.artist}|${media.album}`;
+    case `${ID}duration`:   return `d|${Math.floor(media.position)}|${Math.floor(media.duration)}`;
+    case `${ID}lyrics`:     return `l|${media.title}|${extras.lyrics.status}|${extras.lyrics.index}`;
+    default:                return `c|${String(media.isPlaying)}|${media.title}|${media.artist}|${thumb}`;
   }
 }
 
@@ -97,11 +122,25 @@ function thumbId(media: MediaInfo | null): number {
   if (thumb !== cachedThumb) {
     cachedThumb = thumb;
     cachedId++;
+    coverAccent = null;
+    const id    = cachedId;
     cachedImage = thumb
       ? loadImage(Buffer.from(thumb, 'base64')).catch(() => null)
       : Promise.resolve(null);
+    // Acento de la portada: se calcula una vez por portada, en segundo plano
+    void cachedImage.then((img) => {
+      if (img && id === cachedId) coverAccent = accentFromImage(img);
+    });
   }
   return cachedId;
+}
+
+/** Reduce la portada a 32×32 y elige su color más vivo dominante. */
+function accentFromImage(img: Image): string | null {
+  const small = createCanvas(32, 32);
+  const ctx   = small.getContext('2d');
+  ctx.drawImage(img, 0, 0, 32, 32);
+  return pickAccent(ctx.getImageData(0, 0, 32, 32).data);
 }
 
 /** Portada decodificada una sola vez por canción (antes se decodificaba ~28 veces/s). */
@@ -461,15 +500,28 @@ const SEG_H    = 100;
 const SEGMENTS = 4;
 const BAR_W    = SEG_W * SEGMENTS;
 
+/** Escala del texto de la barra según el ajuste lyricsSize */
+const SIZE_SCALE = { small: 0.8, medium: 1, large: 1.2 } as const;
+
 let barCache: { sig: string; canvas: Canvas } | null = null;
+
+/** Firma de la barra completa (la comparten los 4 knobs). */
+function barSignature(media: MediaInfo | null, extras: RenderExtras): string {
+  const { lyrics, overlay } = extras;
+  const s = getSettings();
+  // El karaoke avanza en pasos de 1/40 de línea: suficiente para verse fluido
+  const step = s.karaoke && lyrics.status === 'ok' ? Math.floor(lyrics.progress * 40) : 0;
+  const ov   = overlay ? `${overlay.kind}:${overlay.kind === 'volume' ? Math.round(overlay.level * 100) : overlay.seconds}` : '';
+  return `${media?.title ?? ''}|${media?.artist ?? ''}|${lyrics.status}|${lyrics.index}|${step}|${ov}|${accentNow()}|${settingsVersion()}`;
+}
 
 export async function renderLyricsBarSegment(
   column: number,
   media:  MediaInfo | null,
-  lyrics: RenderExtras['lyrics'],
+  extras: RenderExtras,
 ): Promise<string> {
-  const sig = `${media?.title ?? ''}|${media?.artist ?? ''}|${lyrics.status}|${lyrics.index}`;
-  if (barCache?.sig !== sig) barCache = { sig, canvas: drawLyricsBar(media, lyrics) };
+  const sig = barSignature(media, extras);
+  if (barCache?.sig !== sig) barCache = { sig, canvas: drawLyricsBar(media, extras) };
 
   const seg = createCanvas(SEG_W, SEG_H);
   const col = ((column % SEGMENTS) + SEGMENTS) % SEGMENTS;
@@ -477,11 +529,12 @@ export async function renderLyricsBarSegment(
   return toDataUrl(seg);
 }
 
-function drawLyricsBar(media: MediaInfo | null, lyrics: RenderExtras['lyrics']): Canvas {
+function drawLyricsBar(media: MediaInfo | null, extras: RenderExtras): Canvas {
   const canvas = createCanvas(BAR_W, SEG_H);
   const ctx    = canvas.getContext('2d');
-  const cx     = BAR_W / 2;
-  const maxW   = BAR_W - 40;
+  const { lyrics, overlay } = extras;
+  const s      = getSettings();
+  const scale  = SIZE_SCALE[s.lyricsSize];
 
   const grad = ctx.createLinearGradient(0, 0, 0, SEG_H);
   grad.addColorStop(0, '#1a1a1a');
@@ -489,33 +542,165 @@ function drawLyricsBar(media: MediaInfo | null, lyrics: RenderExtras['lyrics']):
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, BAR_W, SEG_H);
 
-  ctx.textAlign = 'center';
+  if (overlay) {
+    drawBarOverlay(ctx, overlay);
+    return canvas;
+  }
 
   if (!media || lyrics.status !== 'ok') {
     // Sin letra: mostrar qué suena, en tenue
     ctx.fillStyle = C.dimDark;
     const msg = !media ? '—'
       : lyrics.status === 'loading' ? 'Buscando letra…'
-      : `♪  ${media.title} — ${media.artist}`;
-    drawCenteredText(ctx, msg, cx, 10, maxW, 26, 'normal', 1, SEG_H - 10);
+      : `♪ ${media.title} — ${media.artist}`;
+    drawSegmentedText(ctx, msg, 'normal', Math.round(24 * scale), 12, 6, SEG_H - 6, 2);
     return canvas;
   }
 
   const { current, next } = lyrics.window;
+  const withNext = s.showNextLine && !!next;
 
-  // Línea actual: grande, al centro; si no cabe, baja de tamaño y usa 2 líneas
+  // Línea actual: grande; si no cabe en una fila, baja de tamaño y usa 2 filas.
+  // Con karaoke: blanca, y lo ya cantado en el color de acento.
   ctx.fillStyle = current ? C.text : C.dimDark;
-  drawCenteredText(ctx, current || '♪', cx, 6, maxW, 34, 'bold', 2, next ? 74 : SEG_H - 6);
+  drawSegmentedText(
+    ctx, current || '♪', 'bold', Math.round(32 * scale), 13, 4, withNext ? 74 : SEG_H - 4, 2,
+    s.karaoke && current ? { progress: lyrics.progress, color: C.accent } : undefined,
+  );
 
-  // Siguiente línea: pequeña y tenue, abajo
-  if (next) {
-    ctx.fillStyle    = C.dim;
-    ctx.font         = '15px Arial';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(fitWidth(ctx, next, maxW), cx, SEG_H - 6);
+  // Siguiente línea: pequeña y tenue, abajo, en una sola fila
+  if (withNext) {
+    ctx.fillStyle = C.dim;
+    drawSegmentedText(ctx, next, 'normal', Math.round(15 * scale), 11, 76, SEG_H - 4, 1);
   }
 
   return canvas;
+}
+
+/** Aviso temporal al girar un knob: segundos adelantados/atrasados o el volumen. */
+function drawBarOverlay(ctx: Ctx, overlay: BarOverlay): void {
+  if (overlay.kind === 'seek') {
+    const sign = overlay.seconds >= 0 ? '+' : '−';
+    ctx.fillStyle = C.text;
+    drawSegmentedText(ctx, `${overlay.seconds >= 0 ? 'Adelantar' : 'Atrasar'} ${sign}${Math.abs(overlay.seconds)} s`,
+      'bold', 30, 14, 10, SEG_H - 10, 1);
+    return;
+  }
+
+  // Volumen: texto arriba y una barra de nivel a lo ancho de los 4 knobs
+  const pct = Math.round(overlay.level * 100);
+  ctx.fillStyle = C.text;
+  drawSegmentedText(ctx, `Volumen ${pct}%`, 'bold', 28, 14, 8, 56, 1);
+
+  const x = SEG_PAD, y = 68, w = BAR_W - SEG_PAD * 2, h = 12;
+  ctx.fillStyle = C.progBg;
+  rrect(ctx, x, y, w, h, h / 2);
+  ctx.fill();
+  if (pct > 0) {
+    ctx.fillStyle = C.accent;
+    rrect(ctx, x, y, Math.max(h, w * overlay.level), h, h / 2);
+    ctx.fill();
+  }
+}
+
+// ─── Texto repartido entre los knobs ──────────────────────────────────────────
+
+/** Margen interno de cada pantalla, para que el texto no toque el borde físico. */
+const SEG_PAD = 8;
+
+/**
+ * Dibuja texto en la barra sin que ninguna palabra quede partida entre dos
+ * pantallas: reparte las palabras en grupos (uno por pantalla y fila) y centra
+ * cada grupo en su pantalla. Se lee de izquierda a derecha, fila por fila.
+ *
+ * Intenta, de mayor a menor tamaño de fuente: 1 fila en las 2 pantallas del
+ * centro, 1 fila en las 4, y (si maxRows = 2) 2 filas en las 4. Si ni con la
+ * fuente mínima cabe, recorta el último grupo con "…".
+ *
+ * Con `karaoke`, lo ya cantado (progress 0–1, en orden de lectura) se pinta
+ * encima en `color`.
+ */
+function drawSegmentedText(
+  ctx: Ctx, text: string, weight: 'bold' | 'normal',
+  maxSize: number, minSize: number,
+  top: number, bottom: number, maxRows: 1 | 2,
+  karaoke?: { progress: number; color: string },
+): void {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return;
+  const innerW  = SEG_W - SEG_PAD * 2;
+  const measure = (t: string) => ctx.measureText(t).width;
+
+  type Layout = { size: number; rows: number; segs: number[]; groups: string[] };
+  let layout: Layout | null = null;
+
+  const tryLayout = (size: number, rows: number, segs: number[]): Layout | null => {
+    if (rows * (size + 4) > bottom - top) return null;
+    ctx.font = `${weight} ${size}px Arial`;
+    const groups = partitionWords(words, rows * segs.length, measure);
+    return groups.every(g => measure(g) <= innerW) ? { size, rows, segs, groups } : null;
+  };
+
+  for (let size = maxSize; size >= minSize && !layout; size--) {
+    layout = tryLayout(size, 1, [1, 2]) ?? tryLayout(size, 1, [0, 1, 2, 3]);
+  }
+  if (maxRows === 2) {
+    for (let size = Math.min(maxSize, 24); size >= minSize && !layout; size--) {
+      layout = tryLayout(size, 2, [0, 1, 2, 3]);
+    }
+  }
+  if (!layout) {
+    // No cabe ni al mínimo: llenar las pantallas en orden y recortar lo que sobre
+    const rows = maxRows;
+    ctx.font   = `${weight} ${minSize}px Arial`;
+    const groups = greedyWords(ctx, words, rows * SEGMENTS, innerW);
+    layout = { size: minSize, rows, segs: [0, 1, 2, 3], groups };
+  }
+
+  const { size, rows, segs, groups } = layout;
+  const lineH = size + 4;
+  const y0    = (top + bottom) / 2 - (rows * lineH) / 2;
+
+  ctx.font         = `${weight} ${size}px Arial`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'top';
+
+  const widths = groups.map(g => (g ? measure(g) : 0));
+  const fills  = karaoke ? karaokeFill(widths, karaoke.progress) : null;
+  const base   = ctx.fillStyle;
+
+  groups.forEach((g, i) => {
+    if (!g) return;
+    const cx = segs[i % segs.length] * SEG_W + SEG_W / 2;
+    const y  = y0 + Math.floor(i / segs.length) * lineH;
+    ctx.fillStyle = base;
+    ctx.fillText(g, cx, y);
+
+    const fill = fills?.[i] ?? 0;
+    if (fill > 0) {
+      // Repintar en color solo la parte ya cantada (recorte por la izquierda)
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(cx - widths[i] / 2, y - 2, fill, lineH + 2);
+      ctx.clip();
+      ctx.fillStyle = karaoke!.color;
+      ctx.fillText(g, cx, y);
+      ctx.restore();
+    }
+  });
+}
+
+/** Llena los grupos en orden con lo que quepa; el último termina en "…" si sobran palabras. */
+function greedyWords(ctx: Ctx, words: string[], count: number, maxW: number): string[] {
+  const groups: string[] = [];
+  let i = 0;
+  for (let g = 0; g < count && i < words.length; g++) {
+    let line = words[i++];
+    while (i < words.length && ctx.measureText(`${line} ${words[i]}`).width <= maxW) line += ` ${words[i++]}`;
+    groups.push(fitWidth(ctx, line, maxW));
+  }
+  if (i < words.length) groups[groups.length - 1] = fitWidth(ctx, `${groups[groups.length - 1]}…`, maxW);
+  return groups;
 }
 
 // ─── Visualizador ─────────────────────────────────────────────────────────────

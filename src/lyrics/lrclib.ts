@@ -4,14 +4,26 @@
  *  - Windows: delega la llamada HTTP a SmtcNative.exe, que usa .NET HttpClient
  *    (el https de Node.js en el contexto del plugin no funciona).
  *  - Mac: llamada directa con fetch.
+ *
+ * Las letras encontradas se guardan en disco (<plugin>/cache/lyrics.json, LRU de
+ * CACHE_MAX canciones): LRCLIB a veces responde 503 y así las canciones ya
+ * escuchadas no dependen de él, ni siquiera tras reiniciar.
  */
 import { execFile } from 'child_process';
 import { platform } from 'os';
+import { join }     from 'path';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { findExe }  from '../providers/smtc-windows';
 import { log }      from '../log';
+import { parseLrc } from './lrc';
 import type { LyricLine } from '../types';
 
-// Cache en memoria: "title|artist" → LyricLine[]
+// __dirname = bin/lyrics/ → subir dos niveles al plugin root
+const CACHE_DIR  = join(__dirname, '..', '..', 'cache');
+const CACHE_FILE = join(CACHE_DIR, 'lyrics.json');
+const CACHE_MAX  = 500;
+
+// "title|artist" → LyricLine[]; el orden del Map es el del LRU (último = más reciente)
 const cache    = new Map<string, LyricLine[]>();
 const inFlight = new Map<string, Promise<LyricLine[]>>();
 
@@ -21,9 +33,14 @@ export async function fetchLyrics(
   album:    string,
   duration: number,
 ): Promise<LyricLine[]> {
+  loadDiskCache();
   const key = `${title}|${artist}`;
   const hit = cache.get(key);
-  if (hit) return hit;
+  if (hit) {
+    cache.delete(key);   // mover al final (más reciente)
+    cache.set(key, hit);
+    return hit;
+  }
 
   let pending = inFlight.get(key);
   if (!pending) {
@@ -32,7 +49,10 @@ export async function fetchLyrics(
       : fetchViaHttp(title, artist, album, duration)
     ).then((lines) => {
       // Un resultado vacío puede ser un fallo de red: no lo cacheamos para poder reintentar
-      if (lines.length > 0) cache.set(key, lines);
+      if (lines.length > 0) {
+        cache.set(key, lines);
+        scheduleSave();
+      }
       inFlight.delete(key);
       log(`[lyrics] "${title}" — ${artist}: ${lines.length} líneas`);
       return lines;
@@ -40,6 +60,40 @@ export async function fetchLyrics(
     inFlight.set(key, pending);
   }
   return pending;
+}
+
+// ─── Cache en disco ───────────────────────────────────────────────────────────
+
+let diskLoaded = false;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function loadDiskCache(): void {
+  if (diskLoaded) return;
+  diskLoaded = true;
+  try {
+    const data = JSON.parse(readFileSync(CACHE_FILE, 'utf8')) as Record<string, LyricLine[]>;
+    for (const [key, lines] of Object.entries(data)) {
+      if (Array.isArray(lines) && lines.length > 0 && !cache.has(key)) cache.set(key, lines);
+    }
+    log(`[lyrics] cache en disco: ${cache.size} canciones`);
+  } catch { /* sin cache todavía */ }
+}
+
+/** Guarda en disco unos segundos después del último cambio (agrupa varias escrituras). */
+function scheduleSave(): void {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
+      mkdirSync(CACHE_DIR, { recursive: true });
+      const tmp = `${CACHE_FILE}.tmp`;
+      writeFileSync(tmp, JSON.stringify(Object.fromEntries(cache)));
+      renameSync(tmp, CACHE_FILE);   // atómico: nunca queda un JSON a medias
+    } catch (err) {
+      log(`[lyrics] no se pudo guardar el cache: ${String(err)}`);
+    }
+  }, 3_000);
 }
 
 function fetchViaExe(title: string, artist: string, album: string, duration: number): Promise<LyricLine[]> {
@@ -98,17 +152,4 @@ async function getJson<T>(url: string): Promise<T | null> {
   } catch {
     return null;
   }
-}
-
-function parseLrc(lrc: string): LyricLine[] {
-  const lines: LyricLine[] = [];
-  for (const raw of lrc.split('\n')) {
-    const m = /\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)/.exec(raw);
-    if (!m) continue;
-    const text = m[4].trim();
-    if (!text) continue;
-    const frac = m[3].length === 3 ? Number(m[3]) / 1000 : Number(m[3]) / 100;
-    lines.push({ time: Number(m[1]) * 60 + Number(m[2]) + frac, text });
-  }
-  return lines.sort((a, b) => a.time - b.time);
 }

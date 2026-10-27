@@ -5,7 +5,12 @@
  *   SmtcNative.exe                                         → loop (JSON cada 200ms)
  *       Protocolo 2: la primera línea es {"status":"hello","protocol":2}; la portada
  *       solo se manda cuando cambia (thumbChanged); acepta comandos por stdin
- *       (play|pause|togglePlay|next|previous, uno por línea).
+ *       (play|pause|togglePlay|next|previous, uno por línea). Además:
+ *         seekBy <segundos>   → adelanta/atrasa la canción
+ *         volumeBy <delta>    → cambia el volumen del sistema (−1…1); responde
+ *                               {"status":"volume","level":0.45}
+ *         spectrum on|off     → activa la captura de audio para el visualizador
+ *                               (líneas {"status":"spectrum","bands":[...]})
  *   SmtcNative.exe lyrics <title> <artist> <album> <dur>  → busca letras en LRCLib
  *   SmtcNative.exe play|pause|togglePlay|next|previous    → control SMTC
  *
@@ -93,7 +98,7 @@ class Program
 
         if (args.Length > 0)
         {
-            await SendControlAsync(args[0]);
+            await SendControlAsync(string.Join(' ', args));
             return;
         }
 
@@ -178,12 +183,33 @@ class Program
         return current;
     }
 
-    // Portada de la canción actual y si ya se le mandó al plugin
+    // Portada de la canción actual y si ya se le mandó al plugin.
+    // Algunas apps (Apple Music) publican la portada un momento después de cambiar
+    // de canción, así que se vuelve a leer durante los primeros segundos.
     class ThumbState
     {
         public string  Key   = "";
         public string? Thumb;
         public bool    Sent;
+        public long    ChangedMs;    // cuándo cambió la canción
+        public long    CheckedMs;    // última lectura de la portada
+    }
+
+    const long ThumbRecheckWindowMs = 10_000;
+    const long ThumbRecheckEveryMs  = 1_500;
+
+    static async Task<string?> ReadThumbAsync(GlobalSystemMediaTransportControlsSessionMediaProperties props)
+    {
+        try
+        {
+            if (props.Thumbnail == null) return null;
+            using var stream    = await props.Thumbnail.OpenReadAsync();
+            using var netStream = stream.AsStreamForRead();
+            using var ms        = new MemoryStream();
+            await netStream.CopyToAsync(ms);
+            return ms.Length > 0 ? Convert.ToBase64String(ms.ToArray()) : null;
+        }
+        catch { return null; }
     }
 
     static async Task<string> GetMediaJsonAsync(
@@ -214,31 +240,36 @@ class Program
         }
 
         string cacheKey = $"{title}|{artist}";
+        long   nowMs    = Environment.TickCount64;
         if (thumbs.Key != cacheKey)
         {
-            string? thumb = null;
-            try
+            thumbs.Key       = cacheKey;
+            thumbs.Thumb     = await ReadThumbAsync(props);
+            thumbs.Sent      = false;
+            thumbs.ChangedMs = nowMs;
+            thumbs.CheckedMs = nowMs;
+        }
+        else if (nowMs - thumbs.ChangedMs < ThumbRecheckWindowMs && nowMs - thumbs.CheckedMs >= ThumbRecheckEveryMs)
+        {
+            thumbs.CheckedMs = nowMs;
+            var fresh = await ReadThumbAsync(props);
+            if (fresh != null && fresh != thumbs.Thumb)
             {
-                if (props.Thumbnail != null)
-                {
-                    using var stream    = await props.Thumbnail.OpenReadAsync();
-                    using var netStream = stream.AsStreamForRead();
-                    using var ms        = new MemoryStream();
-                    await netStream.CopyToAsync(ms);
-                    thumb = Convert.ToBase64String(ms.ToArray());
-                }
+                thumbs.Thumb = fresh;
+                thumbs.Sent  = false;
             }
-            catch { }
-            thumbs.Key   = cacheKey;
-            thumbs.Thumb = thumb;
-            thumbs.Sent  = false;
         }
 
-        // La portada (~200 KB en base64) solo viaja una vez por canción
+        // La portada (~200 KB en base64) solo viaja cuando cambia
         bool thumbChanged = !thumbs.Sent;
         thumbs.Sent = true;
 
-        long positionTs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        // SMTC da la posición tal como estaba en LastUpdatedTime (Apple Music no la
+        // actualiza en cada tick): usar ese instante, no "ahora", para interpolar bien.
+        long nowUnix    = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        long updatedTs  = timeline?.LastUpdatedTime.ToUnixTimeMilliseconds() ?? 0;
+        bool updatedOk  = updatedTs > nowUnix - 600_000 && updatedTs <= nowUnix + 1_000;
+        long positionTs = isPlaying && updatedOk ? updatedTs : nowUnix;
         return JsonSerializer.Serialize(new MediaPayload(
             "ok", title, artist, album, thumbChanged ? thumbs.Thumb : null, thumbChanged,
             isPlaying, position, duration, source, positionTs
@@ -339,6 +370,8 @@ class Program
 
     // Loop mode: comandos de control por stdin, uno por línea (evita lanzar un proceso por tecla).
     // Si stdin se cierra, el plugin murió → salir en vez de quedar huérfano.
+    static Spectrum? spectrum;
+
     static async Task ReadCommandsAsync(GlobalSystemMediaTransportControlsSessionManager manager)
     {
         string? line;
@@ -347,18 +380,40 @@ class Program
             try { await SendControlAsync(manager, line.Trim()); }
             catch (Exception ex) { Console.Error.WriteLine($"[SMTC] control '{line}' falló: {ex.Message}"); }
         }
+        spectrum?.Dispose();
         Environment.Exit(0);
     }
 
-    static async Task SendControlAsync(string action)
+    static async Task SendControlAsync(string command)
     {
         var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
         if (manager == null) return;
-        await SendControlAsync(manager, action);
+        await SendControlAsync(manager, command);
     }
 
-    static async Task SendControlAsync(GlobalSystemMediaTransportControlsSessionManager manager, string action)
+    // Comando = acción y argumento opcional, separados por espacio ("seekBy -5")
+    static async Task SendControlAsync(GlobalSystemMediaTransportControlsSessionManager manager, string command)
     {
+        var parts  = command.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return;
+        string action = parts[0];
+        string arg    = parts.Length > 1 ? parts[1] : "";
+        double num    = double.TryParse(arg, System.Globalization.NumberStyles.Float,
+                                        System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0;
+
+        // Comandos que no dependen de la sesión de media
+        switch (action)
+        {
+            case "volumeBy":
+                float level = SystemVolume.ChangeBy((float)num);
+                Console.WriteLine($"{{\"status\":\"volume\",\"level\":{level.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}}}");
+                return;
+            case "spectrum":
+                if (arg == "on" && spectrum == null)  spectrum = new Spectrum();
+                if (arg == "off" && spectrum != null) { spectrum.Dispose(); spectrum = null; }
+                return;
+        }
+
         var session = PickBestSession(manager.GetSessions(), manager.GetCurrentSession());
         if (session == null) return;
         switch (action)
@@ -368,7 +423,20 @@ class Program
             case "togglePlay": await session.TryTogglePlayPauseAsync(); break;
             case "next":       await session.TrySkipNextAsync();        break;
             case "previous":   await session.TrySkipPreviousAsync();    break;
+            case "seekBy":     await SeekByAsync(session, num);         break;
         }
+    }
+
+    static async Task SeekByAsync(GlobalSystemMediaTransportControlsSession session, double seconds)
+    {
+        var tl      = session.GetTimelineProperties();
+        bool playing = session.GetPlaybackInfo()?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+        // Posición real ahora = la reportada + lo que pasó desde LastUpdatedTime (si está sonando)
+        var pos = tl.Position + (playing ? DateTimeOffset.Now - tl.LastUpdatedTime : TimeSpan.Zero);
+        var target = pos + TimeSpan.FromSeconds(seconds);
+        if (target < TimeSpan.Zero) target = TimeSpan.Zero;
+        if (tl.EndTime > TimeSpan.Zero && target > tl.EndTime - TimeSpan.FromSeconds(1)) target = tl.EndTime - TimeSpan.FromSeconds(1);
+        await session.TryChangePlaybackPositionAsync(target.Ticks);
     }
 
     // ── DTOs ──────────────────────────────────────────────────────────────────────

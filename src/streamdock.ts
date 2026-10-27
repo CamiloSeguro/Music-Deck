@@ -46,6 +46,8 @@ class StreamDock {
   connect(): void {
     this.ws = new WebSocket(`ws://127.0.0.1:${this.port}`);
 
+    let announced = false;
+
     this.ws.on('open', () => {
       // Registro obligatorio al conectar
       this.send({ event: this.registerEvent, uuid: this.uuid });
@@ -53,6 +55,13 @@ class StreamDock {
     });
 
     this.ws.on('message', (raw: Buffer) => {
+      // Evento propio (no del protocolo) al llegar el primer mensaje: VSD Craft
+      // ignora pedidos (p. ej. getGlobalSettings) enviados justo al abrir, antes
+      // de terminar de procesar el registro.
+      if (!announced) {
+        announced = true;
+        for (const h of this.handlers.get('connected') ?? []) void h({ event: 'connected' });
+      }
       try {
         const ev = JSON.parse(raw.toString()) as SDEvent;
         const list = this.handlers.get(ev.event) ?? [];
@@ -104,6 +113,11 @@ class StreamDock {
       context,
       payload: { title, target: 0 },
     });
+  }
+
+  /** Pide los ajustes globales; llegan en un evento didReceiveGlobalSettings */
+  getGlobalSettings(): void {
+    this.send({ event: 'getGlobalSettings', context: this.uuid });
   }
 
   /** Envía mensaje al log del StreamDock */
