@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
+    "deploy": "tsc && node tools/deploy.js --restart",
     "setup": "npm install && cd dev.camiloseguro.musicdeck.sdPlugin && npm install"
   },
   "devDependencies": {

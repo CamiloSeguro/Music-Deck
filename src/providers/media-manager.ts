@@ -85,23 +85,19 @@ class MediaManager {
       ? getSmtcCurrentMedia()
       : await this.getMacMedia();
 
-    if (this.hasChanged(next)) {
-      this.current = next;
-      this.notify(next);
-    } else if (next && this.current) {
-      if (next.position !== this.current.position) {
-        this.current = next;
-      }
-    }
+    const changed = this.hasChanged(next);
+    this.current  = next;
+    if (changed) this.notify(next);
   }
 
   private hasChanged(next: MediaInfo | null): boolean {
     if (!this.current && !next) return false;
     if (!this.current || !next)  return true;
     return (
-      this.current.title     !== next.title  ||
-      this.current.artist    !== next.artist ||
-      this.current.isPlaying !== next.isPlaying
+      this.current.title           !== next.title     ||
+      this.current.artist          !== next.artist    ||
+      this.current.isPlaying       !== next.isPlaying ||
+      this.current.thumbnailBase64 !== next.thumbnailBase64
     );
   }
 

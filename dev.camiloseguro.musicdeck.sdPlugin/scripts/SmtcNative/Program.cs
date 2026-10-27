@@ -3,6 +3,9 @@
  *
  * Modos:
  *   SmtcNative.exe                                         → loop (JSON cada 200ms)
+ *       Protocolo 2: la primera línea es {"status":"hello","protocol":2}; la portada
+ *       solo se manda cuando cambia (thumbChanged); acepta comandos por stdin
+ *       (play|pause|togglePlay|next|previous, uno por línea).
  *   SmtcNative.exe lyrics <title> <artist> <album> <dur>  → busca letras en LRCLib
  *   SmtcNative.exe play|pause|togglePlay|next|previous    → control SMTC
  *
@@ -106,24 +109,30 @@ class Program
             return;
         }
 
-        var thumbCache = new Dictionary<string, string?>();
-        int dbgTick    = 0;
+        Console.WriteLine("{\"status\":\"hello\",\"protocol\":2}");
+        _ = Task.Run(() => ReadCommandsAsync(manager));
+
+        var thumbs      = new ThumbState();
+        string lastDbg  = "";
 
         while (true)
         {
             try
             {
-                if (++dbgTick % 25 == 1)
+                // Log de sesiones solo cuando cambian (antes: cada 5 s, para siempre)
+                var sessions = manager.GetSessions();
+                var dbg = $"sessions={sessions.Count} current={manager.GetCurrentSession()?.SourceAppUserModelId ?? "null"}";
+                foreach (var s in sessions)
                 {
-                    var sessions = manager.GetSessions();
-                    Console.Error.WriteLine($"[SMTC-DBG] sessions={sessions.Count} current={manager.GetCurrentSession()?.SourceAppUserModelId ?? "null"}");
-                    foreach (var s in sessions)
-                    {
-                        try { Console.Error.WriteLine($"[SMTC-DBG]  src={s.SourceAppUserModelId} status={s.GetPlaybackInfo()?.PlaybackStatus}"); } catch { }
-                    }
+                    try { dbg += $" | {s.SourceAppUserModelId}={s.GetPlaybackInfo()?.PlaybackStatus}"; } catch { }
+                }
+                if (dbg != lastDbg)
+                {
+                    Console.Error.WriteLine($"[SMTC-DBG] {dbg}");
+                    lastDbg = dbg;
                 }
 
-                var json = await GetMediaJsonAsync(manager, thumbCache);
+                var json = await GetMediaJsonAsync(manager, thumbs);
                 Console.WriteLine(json);
             }
             catch (Exception ex)
@@ -166,13 +175,20 @@ class Program
                     return s;
             } catch { }
         }
-        if (current != null && !IsBrowser(current.SourceAppUserModelId ?? "")) return current;
         return current;
+    }
+
+    // Portada de la canción actual y si ya se le mandó al plugin
+    class ThumbState
+    {
+        public string  Key   = "";
+        public string? Thumb;
+        public bool    Sent;
     }
 
     static async Task<string> GetMediaJsonAsync(
         GlobalSystemMediaTransportControlsSessionManager manager,
-        Dictionary<string, string?> thumbCache)
+        ThumbState thumbs)
     {
         var session = PickBestSession(manager.GetSessions(), manager.GetCurrentSession());
         if (session == null) return "{\"status\":\"no_media\"}";
@@ -198,9 +214,8 @@ class Program
         }
 
         string cacheKey = $"{title}|{artist}";
-        if (!thumbCache.ContainsKey(cacheKey))
+        if (thumbs.Key != cacheKey)
         {
-            thumbCache.Clear();
             string? thumb = null;
             try
             {
@@ -214,12 +229,18 @@ class Program
                 }
             }
             catch { }
-            thumbCache[cacheKey] = thumb;
+            thumbs.Key   = cacheKey;
+            thumbs.Thumb = thumb;
+            thumbs.Sent  = false;
         }
+
+        // La portada (~200 KB en base64) solo viaja una vez por canción
+        bool thumbChanged = !thumbs.Sent;
+        thumbs.Sent = true;
 
         long positionTs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         return JsonSerializer.Serialize(new MediaPayload(
-            "ok", title, artist, album, thumbCache.GetValueOrDefault(cacheKey),
+            "ok", title, artist, album, thumbChanged ? thumbs.Thumb : null, thumbChanged,
             isPlaying, position, duration, source, positionTs
         ));
     }
@@ -316,10 +337,28 @@ class Program
 
     // ── Control ───────────────────────────────────────────────────────────────────
 
+    // Loop mode: comandos de control por stdin, uno por línea (evita lanzar un proceso por tecla).
+    // Si stdin se cierra, el plugin murió → salir en vez de quedar huérfano.
+    static async Task ReadCommandsAsync(GlobalSystemMediaTransportControlsSessionManager manager)
+    {
+        string? line;
+        while ((line = await Console.In.ReadLineAsync()) != null)
+        {
+            try { await SendControlAsync(manager, line.Trim()); }
+            catch (Exception ex) { Console.Error.WriteLine($"[SMTC] control '{line}' falló: {ex.Message}"); }
+        }
+        Environment.Exit(0);
+    }
+
     static async Task SendControlAsync(string action)
     {
         var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
         if (manager == null) return;
+        await SendControlAsync(manager, action);
+    }
+
+    static async Task SendControlAsync(GlobalSystemMediaTransportControlsSessionManager manager, string action)
+    {
         var session = PickBestSession(manager.GetSessions(), manager.GetCurrentSession());
         if (session == null) return;
         switch (action)
@@ -340,6 +379,7 @@ class Program
         [property: JsonPropertyName("artist")]      string  Artist,
         [property: JsonPropertyName("album")]       string  Album,
         [property: JsonPropertyName("thumbnail")]   string? Thumbnail,
+        [property: JsonPropertyName("thumbChanged")] bool   ThumbChanged,
         [property: JsonPropertyName("isPlaying")]   bool    IsPlaying,
         [property: JsonPropertyName("position")]    double  Position,
         [property: JsonPropertyName("duration")]    double  Duration,

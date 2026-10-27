@@ -7,10 +7,26 @@
  *  renderTitleKey(media)              → título de la canción
  *  renderArtistKey(media)             → artista
  *  renderDurationKey(media)           → posición / duración
+ *  renderLyricsKey(media, lyrics)     → línea anterior / actual / siguiente
+ *  renderVisualizerKey(bars)          → barras animadas
+ *
+ *  renderSignature() resume lo que muestra cada botón: si no cambia, no hace
+ *  falta volver a renderizarlo ni reenviarlo al StreamDock.
  */
-import { createCanvas, loadImage } from '@napi-rs/canvas';
+import { createCanvas, loadImage, type Canvas, type Image } from '@napi-rs/canvas';
 import type { SKRSContext2D } from '@napi-rs/canvas';
 import type { MediaInfo } from '../types';
+import type { LyricsWindow } from '../lyrics/sync';
+
+const ID = 'dev.camiloseguro.musicdeck.';
+
+/** Datos extra (fuera de MediaInfo) que necesitan algunos botones. */
+export interface RenderExtras {
+  /** Letra de la canción actual: buscando, no encontrada, o línea activa */
+  lyrics:     { status: 'loading' | 'none' | 'ok'; index: number; window: LyricsWindow };
+  /** Alturas 0–1 del visualizador */
+  bars:       number[];
+}
 
 const KW = 144;
 const KH = 144;
@@ -29,15 +45,69 @@ type Ctx = SKRSContext2D;
 
 // ─── Dispatcher central ───────────────────────────────────────────────────────
 
-export async function renderKey(actionId: string, media: MediaInfo | null): Promise<string> {
-  if (actionId.startsWith('dev.camiloseguro.musicdeck.albumart.')) {
+export async function renderKey(
+  actionId: string,
+  media:    MediaInfo | null,
+  extras:   RenderExtras,
+  /** Columna del botón/knob (para acciones repartidas en varios knobs) */
+  column = 0,
+): Promise<string> {
+  if (actionId.startsWith(`${ID}albumart.`)) {
     const q = parseInt(actionId.slice(-1), 10) as 0 | 1 | 2 | 3;
     return renderAlbumArtKey(q, media);
   }
-  if (actionId === 'dev.camiloseguro.musicdeck.title')    return renderTitleKey(media);
-  if (actionId === 'dev.camiloseguro.musicdeck.artist')   return renderArtistKey(media);
-  if (actionId === 'dev.camiloseguro.musicdeck.duration') return renderDurationKey(media);
+  if (actionId === `${ID}title`)      return renderTitleKey(media);
+  if (actionId === `${ID}artist`)     return renderArtistKey(media);
+  if (actionId === `${ID}duration`)   return renderDurationKey(media);
+  if (actionId === `${ID}lyrics`)     return renderLyricsKey(media, extras.lyrics);
+  if (actionId === `${ID}lyricsbar`)  return renderLyricsBarSegment(column, media, extras.lyrics);
+  if (actionId === `${ID}visualizer`) return renderVisualizerKey(extras.bars);
   return renderControlKey(actionId, media);
+}
+
+/** Resumen de lo que dibuja un botón; misma firma ⇒ misma imagen. */
+export function renderSignature(
+  actionId: string,
+  media:    MediaInfo | null,
+  extras:   RenderExtras,
+): string {
+  const thumb = thumbId(media);
+  if (actionId.startsWith(`${ID}albumart.`)) return `art|${thumb}`;
+  if (!media && actionId !== `${ID}visualizer`) return 'empty';
+  switch (actionId) {
+    case `${ID}title`:      return `t|${media!.title}`;
+    case `${ID}artist`:     return `a|${media!.artist}|${media!.album}`;
+    case `${ID}duration`:   return `d|${Math.floor(media!.position)}|${Math.floor(media!.duration)}`;
+    case `${ID}lyrics`:
+    case `${ID}lyricsbar`:  return `l|${media!.title}|${extras.lyrics.status}|${extras.lyrics.index}`;
+    case `${ID}visualizer`: return `v|${extras.bars.map(b => Math.round(b * 60)).join(',')}`;
+    default:                return `c|${String(media!.isPlaying)}|${media!.title}|${media!.artist}|${thumb}`;
+  }
+}
+
+// ─── Cache de la portada decodificada ─────────────────────────────────────────
+
+let cachedThumb:  string | null = null;
+let cachedId    = 0;
+let cachedImage: Promise<Image | null> = Promise.resolve(null);
+
+/** Id que cambia solo cuando cambia la portada (comparar el base64 es barato si no cambió). */
+function thumbId(media: MediaInfo | null): number {
+  const thumb = media?.thumbnailBase64 ?? null;
+  if (thumb !== cachedThumb) {
+    cachedThumb = thumb;
+    cachedId++;
+    cachedImage = thumb
+      ? loadImage(Buffer.from(thumb, 'base64')).catch(() => null)
+      : Promise.resolve(null);
+  }
+  return cachedId;
+}
+
+/** Portada decodificada una sola vez por canción (antes se decodificaba ~28 veces/s). */
+function getArt(media: MediaInfo | null): Promise<Image | null> {
+  thumbId(media);
+  return cachedImage;
 }
 
 // ─── Portada (cuadrante) ──────────────────────────────────────────────────────
@@ -57,25 +127,21 @@ export async function renderAlbumArtKey(
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, KW, KH);
 
-  if (!media?.thumbnailBase64) {
+  const img = await getArt(media);
+  if (!img) {
     drawNoArtPlaceholder(ctx, quadrant);
     return toDataUrl(canvas);
   }
 
-  try {
-    const img = await loadImage(Buffer.from(media.thumbnailBase64, 'base64'));
-    // Dibujamos la imagen completa a 288×288 y usamos el offset del cuadrante
-    const ox = (quadrant === 1 || quadrant === 3) ? -KW : 0;
-    const oy = (quadrant === 2 || quadrant === 3) ? -KH : 0;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, KW, KH);
-    ctx.clip();
-    ctx.drawImage(img, ox, oy, KW * 2, KH * 2);
-    ctx.restore();
-  } catch {
-    drawNoArtPlaceholder(ctx, quadrant);
-  }
+  // Dibujamos la imagen completa a 288×288 y usamos el offset del cuadrante
+  const ox = (quadrant === 1 || quadrant === 3) ? -KW : 0;
+  const oy = (quadrant === 2 || quadrant === 3) ? -KH : 0;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, KW, KH);
+  ctx.clip();
+  ctx.drawImage(img, ox, oy, KW * 2, KH * 2);
+  ctx.restore();
 
   return toDataUrl(canvas);
 }
@@ -117,15 +183,12 @@ export async function renderControlKey(
   ctx.fillRect(0, 0, KW, KH);
 
   // Portada de fondo con opacidad baja
-  if (media?.thumbnailBase64) {
-    try {
-      const img = await loadImage(Buffer.from(media.thumbnailBase64, 'base64'));
-      ctx.save();
-      ctx.globalAlpha = 0.25;
-      ctx.drawImage(img, 0, 0, KW, KH);
-      ctx.globalAlpha = 1;
-      ctx.restore();
-    } catch { /* sin portada */ }
+  const art = await getArt(media);
+  if (art) {
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.drawImage(art, 0, 0, KW, KH);
+    ctx.restore();
   }
 
   // Overlay oscuro
@@ -211,7 +274,7 @@ export async function renderTitleKey(media: MediaInfo | null): Promise<string> {
   const canvas = createCanvas(KW, KH);
   const ctx    = canvas.getContext('2d');
 
-  drawInfoBackground(ctx, media);
+  drawInfoBackground(ctx);
 
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'top';
@@ -227,7 +290,7 @@ export async function renderTitleKey(media: MediaInfo | null): Promise<string> {
 
   if (media?.title) {
     ctx.fillStyle = C.text;
-    drawCenteredText(ctx, media.title, KW / 2, 34, KW - 16, 15, 'bold');
+    drawCenteredText(ctx, media.title, KW / 2, 34, KW - 16, 15, 'bold', 3, KH - 20);
   } else {
     ctx.fillStyle = C.dimDark;
     ctx.font      = '12px Arial';
@@ -243,7 +306,7 @@ export async function renderArtistKey(media: MediaInfo | null): Promise<string> 
   const canvas = createCanvas(KW, KH);
   const ctx    = canvas.getContext('2d');
 
-  drawInfoBackground(ctx, media);
+  drawInfoBackground(ctx);
 
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'top';
@@ -259,7 +322,7 @@ export async function renderArtistKey(media: MediaInfo | null): Promise<string> 
 
   if (media?.artist) {
     ctx.fillStyle = C.dim;
-    drawCenteredText(ctx, media.artist, KW / 2, 34, KW - 16, 14, 'normal');
+    drawCenteredText(ctx, media.artist, KW / 2, 34, KW - 16, 14, 'normal', 3, KH - 20);
   } else {
     ctx.fillStyle = C.dimDark;
     ctx.font      = '12px Arial';
@@ -283,7 +346,7 @@ export async function renderDurationKey(media: MediaInfo | null): Promise<string
   const canvas = createCanvas(KW, KH);
   const ctx    = canvas.getContext('2d');
 
-  drawInfoBackground(ctx, media);
+  drawInfoBackground(ctx);
 
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'top';
@@ -339,19 +402,154 @@ export async function renderDurationKey(media: MediaInfo | null): Promise<string
   return toDataUrl(canvas);
 }
 
-// ─── Helpers de render ────────────────────────────────────────────────────────
+// ─── Letra ────────────────────────────────────────────────────────────────────
 
-function drawInfoBackground(ctx: Ctx, media: MediaInfo | null): void {
+export async function renderLyricsKey(
+  media:  MediaInfo | null,
+  lyrics: RenderExtras['lyrics'],
+): Promise<string> {
+  const canvas = createCanvas(KW, KH);
+  const ctx    = canvas.getContext('2d');
+
+  drawInfoBackground(ctx);
+
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle    = C.label;
+  ctx.font         = '10px Arial';
+  ctx.fillText('LETRA', KW / 2, 8);
+
+  ctx.fillStyle = C.accent;
+  ctx.fillRect(KW / 2 - 16, 20, 32, 2);
+
+  const { status, window: w } = lyrics;
+
+  if (!media || status !== 'ok') {
+    const msg = !media ? '—' : status === 'loading' ? 'Buscando…' : 'Sin letra';
+    ctx.fillStyle    = C.dimDark;
+    ctx.font         = '12px Arial';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(msg, KW / 2, KH / 2 + 6);
+    return toDataUrl(canvas);
+  }
+
+  // Anterior (arriba, tenue) · actual (centro, grande) · siguiente (abajo, tenue)
+  ctx.fillStyle = C.dimDark;
+  ctx.font      = '10px Arial';
+  if (w.previous) ctx.fillText(fitWidth(ctx, w.previous, KW - 12), KW / 2, 28);
+
+  ctx.fillStyle = w.current ? C.text : C.dimDark;
+  drawCenteredText(ctx, w.current || '♪', KW / 2, 40, KW - 12, 15, 'bold', 3, KH - 22);
+
+  ctx.fillStyle    = C.dim;
+  ctx.font         = '10px Arial';
+  ctx.textBaseline = 'bottom';
+  if (w.next) ctx.fillText(fitWidth(ctx, w.next, KW - 12), KW / 2, KH - 8);
+
+  return toDataUrl(canvas);
+}
+
+// ─── Letra en la barra de knobs ───────────────────────────────────────────────
+
+/**
+ * La pantalla sobre los 4 knobs del N4 Pro: cada knob muestra un segmento de
+ * SEG_W×SEG_H. Se dibuja la barra completa una vez y cada knob recorta su parte
+ * (igual que la portada repartida en 4 botones).
+ */
+const SEG_W    = 200;
+const SEG_H    = 100;
+const SEGMENTS = 4;
+const BAR_W    = SEG_W * SEGMENTS;
+
+let barCache: { sig: string; canvas: Canvas } | null = null;
+
+export async function renderLyricsBarSegment(
+  column: number,
+  media:  MediaInfo | null,
+  lyrics: RenderExtras['lyrics'],
+): Promise<string> {
+  const sig = `${media?.title ?? ''}|${media?.artist ?? ''}|${lyrics.status}|${lyrics.index}`;
+  if (barCache?.sig !== sig) barCache = { sig, canvas: drawLyricsBar(media, lyrics) };
+
+  const seg = createCanvas(SEG_W, SEG_H);
+  const col = ((column % SEGMENTS) + SEGMENTS) % SEGMENTS;
+  seg.getContext('2d').drawImage(barCache.canvas, -col * SEG_W, 0);
+  return toDataUrl(seg);
+}
+
+function drawLyricsBar(media: MediaInfo | null, lyrics: RenderExtras['lyrics']): Canvas {
+  const canvas = createCanvas(BAR_W, SEG_H);
+  const ctx    = canvas.getContext('2d');
+  const cx     = BAR_W / 2;
+  const maxW   = BAR_W - 40;
+
+  const grad = ctx.createLinearGradient(0, 0, 0, SEG_H);
+  grad.addColorStop(0, '#1a1a1a');
+  grad.addColorStop(1, '#0a0a0a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, BAR_W, SEG_H);
+
+  ctx.textAlign = 'center';
+
+  if (!media || lyrics.status !== 'ok') {
+    // Sin letra: mostrar qué suena, en tenue
+    ctx.fillStyle = C.dimDark;
+    const msg = !media ? '—'
+      : lyrics.status === 'loading' ? 'Buscando letra…'
+      : `♪  ${media.title} — ${media.artist}`;
+    drawCenteredText(ctx, msg, cx, 10, maxW, 26, 'normal', 1, SEG_H - 10);
+    return canvas;
+  }
+
+  const { current, next } = lyrics.window;
+
+  // Línea actual: grande, al centro; si no cabe, baja de tamaño y usa 2 líneas
+  ctx.fillStyle = current ? C.text : C.dimDark;
+  drawCenteredText(ctx, current || '♪', cx, 6, maxW, 34, 'bold', 2, next ? 74 : SEG_H - 6);
+
+  // Siguiente línea: pequeña y tenue, abajo
+  if (next) {
+    ctx.fillStyle    = C.dim;
+    ctx.font         = '15px Arial';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(fitWidth(ctx, next, maxW), cx, SEG_H - 6);
+  }
+
+  return canvas;
+}
+
+// ─── Visualizador ─────────────────────────────────────────────────────────────
+
+export async function renderVisualizerKey(bars: number[]): Promise<string> {
+  const canvas = createCanvas(KW, KH);
+  const ctx    = canvas.getContext('2d');
+
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, KW, KH);
 
-  if (media?.thumbnailBase64) {
-    try {
-      // No podemos await aquí, se llama de forma síncrona como fondo suave
-      // Se carga en las funciones que lo necesitan
-    } catch { /* noop */ }
-  }
+  const pad   = 10;
+  const gap   = 2;
+  const bw    = (KW - pad * 2 - gap * (bars.length - 1)) / bars.length;
+  const baseY = KH - pad;
+  const maxH  = KH - pad * 2;
 
+  const grad = ctx.createLinearGradient(0, baseY - maxH, 0, baseY);
+  grad.addColorStop(0, '#ff6a5a');
+  grad.addColorStop(1, C.accent);
+  ctx.fillStyle = grad;
+
+  bars.forEach((b, i) => {
+    const h = Math.max(2, b * maxH);
+    rrect(ctx, pad + i * (bw + gap), baseY - h, bw, h, Math.min(2, bw / 2));
+    ctx.fill();
+  });
+
+  return toDataUrl(canvas);
+}
+
+// ─── Helpers de render ────────────────────────────────────────────────────────
+
+function drawInfoBackground(ctx: Ctx): void {
   // Gradiente sutil de fondo
   const grad = ctx.createLinearGradient(0, 0, 0, KH);
   grad.addColorStop(0, 'rgba(30,30,30,1)');
@@ -361,53 +559,67 @@ function drawInfoBackground(ctx: Ctx, media: MediaInfo | null): void {
 }
 
 /**
- * Dibuja texto centrado con font-size que se reduce automáticamente si no cabe.
+ * Dibuja texto centrado en varias líneas (hasta maxLines), reduciendo el
+ * font-size si hace falta; si ni al mínimo cabe, la última línea termina en "…".
+ * Se centra verticalmente entre startY y endY.
  */
 function drawCenteredText(
   ctx: Ctx, text: string,
   cx: number, startY: number,
   maxW: number, baseFontSize: number,
   weight: 'bold' | 'normal',
+  maxLines: number, endY: number,
 ): void {
-  let size = baseFontSize;
-  ctx.font = `${weight} ${size}px Arial`;
+  const MIN = 10;
+  let size  = baseFontSize;
+  let lines: string[] = [];
 
-  while (ctx.measureText(text).width > maxW && size > 9) {
-    size--;
+  for (; size >= MIN; size--) {
     ctx.font = `${weight} ${size}px Arial`;
+    lines = wrap(ctx, text, maxW);
+    const fitsHeight = lines.length * (size + 4) <= endY - startY;
+    if (lines.length <= maxLines && fitsHeight) break;
+  }
+  if (size < MIN) {
+    size     = MIN;
+    ctx.font = `${weight} ${size}px Arial`;
+    lines    = wrap(ctx, text, maxW);
+  }
+  if (lines.length > maxLines) {
+    lines = lines.slice(0, maxLines);
+    lines[maxLines - 1] = fitWidth(ctx, `${lines[maxLines - 1]}…`, maxW);
   }
 
-  // Si aún no cabe, truncar
-  let display = text;
-  while (ctx.measureText(display).width > maxW && display.length > 1) {
-    display = display.slice(0, -1);
-  }
-  if (display !== text) display = display.slice(0, -1) + '…';
-
-  // Centrar verticalmente en el espacio disponible
-  const lineH  = size + 4;
-  const words  = display.split(' ');
-  const lines: string[] = [];
-  let line = '';
-
-  for (const w of words) {
-    const test = line ? `${line} ${w}` : w;
-    if (ctx.measureText(test).width > maxW && line) {
-      lines.push(line);
-      line = w;
-      if (lines.length >= 3) { line += '…'; break; }
-    } else {
-      line = test;
-    }
-  }
-  if (line) lines.push(line);
-
-  const totalH = lines.length * lineH;
-  const midY   = startY + (KH - startY - 20) / 2;
-  const y0     = midY - totalH / 2;
+  const lineH = size + 4;
+  const y0    = (startY + endY) / 2 - (lines.length * lineH) / 2;
 
   ctx.textBaseline = 'top';
   lines.forEach((l, i) => ctx.fillText(l, cx, y0 + i * lineH));
+}
+
+/** Parte el texto en líneas por palabras; palabras más largas que maxW se recortan. */
+function wrap(ctx: Ctx, text: string, maxW: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const test = line ? `${line} ${word}` : word;
+    if (ctx.measureText(test).width <= maxW || !line) {
+      line = test;
+    } else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.map(l => fitWidth(ctx, l, maxW));
+}
+
+/** Recorta con "…" hasta que quepa en maxW con la fuente actual. */
+function fitWidth(ctx: Ctx, text: string, maxW: number): string {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let s = text.replace(/…$/, '');
+  while (s.length > 1 && ctx.measureText(`${s}…`).width > maxW) s = s.slice(0, -1);
+  return `${s.trimEnd()}…`;
 }
 
 // ─── Utilidades ───────────────────────────────────────────────────────────────

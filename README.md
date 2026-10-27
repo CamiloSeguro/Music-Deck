@@ -9,7 +9,9 @@ Soporta **Apple Music**, **Spotify**, **Chrome/Edge** y cualquier app compatible
 - **Portada del álbum** dividida en 4 botones (cuadrícula 2×2) para formar una sola imagen grande sobre el Stream Deck.
 - **Controles**: play/pause, siguiente, anterior.
 - **Información de la canción**: título, artista, y posición/duración.
-- **Letras sincronizadas** vía [LRCLIB](https://lrclib.net/).
+- **Duración**: posición, duración total y barra de progreso.
+- **Letras sincronizadas** vía [LRCLIB](https://lrclib.net/): botón con la línea anterior, la actual y la siguiente.
+- **Letra en la barra de knobs** (VSD N4 Pro): pon "Letra (barra de knobs)" en los 4 knobs y la letra se ve como una sola barra a lo ancho de la pantalla (4 segmentos de 200×100).
 - **Visualizador de barras** animado mientras se reproduce música.
 
 ### Fuentes de reproducción
@@ -30,22 +32,23 @@ Music-Deck/
 │   ├── plugin.ts                     # Punto de entrada: eventos StreamDock y loop de render
 │   ├── streamdock.ts                 # Cliente WebSocket del protocolo StreamDock
 │   ├── types.ts                      # Tipos compartidos (MediaInfo, LyricLine, etc.)
-│   ├── actions/                      # Handlers de cada acción del Stream Deck
+│   ├── log.ts                        # debug.log con tamaño máximo (rota a 5 MB)
 │   ├── providers/                    # Integraciones por plataforma/app
 │   │   ├── smtc-windows.ts           # Windows: lee el caché de SmtcNative.exe
 │   │   ├── apple-music-mac.ts        # macOS: Apple Music vía AppleScript
 │   │   ├── spotify-mac.ts            # macOS: Spotify vía AppleScript
 │   │   └── media-manager.ts          # Unifica providers y notifica cambios
 │   ├── lyrics/
-│   │   ├── lrclib.ts                 # Búsqueda de letras en LRCLIB
+│   │   ├── lrclib.ts                 # Búsqueda de letras en LRCLIB (vía SmtcNative en Windows)
 │   │   └── sync.ts                   # Cálculo de línea activa según posición
 │   └── ui/
 │       ├── canvas-renderer.ts        # Genera las imágenes PNG de cada botón (144×144)
 │       └── visualizer.ts             # Estado del visualizador de barras animado
 │
+├── tools/deploy.js                   # Copia el plugin a StreamDock y lo reinicia
+│
 └── dev.camiloseguro.musicdeck.sdPlugin/   # Paquete del plugin (.sdPlugin) para StreamDock
     ├── manifest.json                 # Definición de acciones, íconos y requisitos
-    ├── layouts/                      # Layouts de Stream Deck+ (encoder)
     ├── imgs/                         # Íconos del plugin
     ├── bin/                          # Salida compilada (generada, no versionada)
     └── scripts/
@@ -73,6 +76,9 @@ npm run build
 
 # Recompila automáticamente al guardar cambios
 npm run watch
+
+# Compila, copia el plugin a StreamDock y lo reinicia
+npm run deploy
 ```
 
 En Windows, además hay que compilar el binario nativo que lee SMTC y busca letras:
@@ -82,9 +88,11 @@ cd dev.camiloseguro.musicdeck.sdPlugin/scripts/SmtcNative
 dotnet build -c Release
 ```
 
+El binario usa `RollForward=Major`: compilado para .NET 8, corre en cualquier runtime >= 8 instalado.
+
 ### Cargar el plugin en StreamDock
 
-Copia (o enlaza) la carpeta `dev.camiloseguro.musicdeck.sdPlugin/` dentro del directorio de plugins de StreamDock:
+`npm run deploy` lo hace automáticamente. A mano: copia (o enlaza) la carpeta `dev.camiloseguro.musicdeck.sdPlugin/` dentro del directorio de plugins de StreamDock:
 
 - **Windows**: `%AppData%\HotSpot\StreamDock\plugins\`
 - **macOS**: `~/Library/Application Support/HotSpot/StreamDock/plugins/`

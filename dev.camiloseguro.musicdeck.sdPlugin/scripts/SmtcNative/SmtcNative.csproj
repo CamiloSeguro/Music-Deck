@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <Optimize>true</Optimize>
-    <Nullable>enable</Nullable>
+    <!-- Corre en cualquier .NET >= 8 instalado (8, 9, 10...) -->
+    <RollForward>Major</RollForward>
   </PropertyGroup>
 </Project>

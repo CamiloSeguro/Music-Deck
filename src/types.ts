@@ -23,5 +23,3 @@ export interface LyricLine {
 
 export type ControlAction = 'play' | 'pause' | 'togglePlay' | 'next' | 'previous';
 
-/** Columna del encoder en el Stream Deck+ (0–3) → qué mostrar */
-export type SlotRole = 'art' | 'info' | 'lyric-current' | 'lyric-next' | 'compact';

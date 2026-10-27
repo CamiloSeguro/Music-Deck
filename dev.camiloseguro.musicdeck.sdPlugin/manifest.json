@@ -1,9 +1,9 @@
 {
   "SDKVersion": 1,
   "Name": "Music Deck",
-  "Version": "1.1.0",
+  "Version": "1.2.0",
   "Author": "Camilo Seguro",
-  "Description": "Portada, controles y info de la canción actual. Apple Music, Spotify, Chrome y cualquier app SMTC.",
+  "Description": "Portada, controles, letra sincronizada e info de la canción actual. Apple Music, Spotify, Chrome y cualquier app SMTC.",
   "Category": "Music Deck",
   "CategoryIcon": "imgs/category",
   "Icon": "imgs/plugin",
@@ -96,6 +96,33 @@
       "UUID": "dev.camiloseguro.musicdeck.duration",
       "Icon": "imgs/plugin",
       "Tooltip": "Muestra la posición y duración de la canción actual",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
+    },
+    {
+      "Name": "Letra",
+      "UUID": "dev.camiloseguro.musicdeck.lyrics",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Letra sincronizada de la canción actual (vía LRCLIB): línea anterior, actual y siguiente",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
+    },
+    {
+      "Name": "Letra (barra de knobs)",
+      "UUID": "dev.camiloseguro.musicdeck.lyricsbar",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Ponla en los 4 knobs: la letra se ve como una sola barra a lo ancho de la pantalla",
+      "Controllers": ["Knob"],
+      "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
+      "SupportedInMultiActions": false
+    },
+    {
+      "Name": "Visualizador",
+      "UUID": "dev.camiloseguro.musicdeck.visualizer",
+      "Icon": "imgs/plugin",
+      "Tooltip": "Barras animadas mientras suena música",
       "Controllers": ["Keypad"],
       "States": [{ "Image": "imgs/plugin", "Title": "", "ShowTitle": false }],
       "SupportedInMultiActions": false

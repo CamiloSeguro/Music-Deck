@@ -1,23 +1,29 @@
 /**
  * smtc-windows.ts
  *
- * Uses a pre-compiled .NET 10 console app (SmtcNative.exe) to read Windows SMTC.
+ * Uses a pre-compiled .NET console app (SmtcNative.exe) to read Windows SMTC.
  * The exe handles WinRT async correctly — PowerShell 5.1 cannot.
  *
- * Loop mode: SmtcNative.exe (no args) writes one JSON line per second to stdout.
- * Control mode: SmtcNative.exe <action> sends command and exits.
+ * Loop mode: SmtcNative.exe (no args) writes one JSON line per tick to stdout.
+ *   Protocol v2 (announced with {"status":"hello","protocol":2}):
+ *     - the thumbnail is only sent when it changes (`thumbChanged: true`)
+ *     - accepts control commands on stdin, one per line (play, next, ...)
+ *   Older builds send the thumbnail on every line and ignore stdin.
+ * Control mode: SmtcNative.exe <action> sends command and exits (fallback for v1).
  *
- * The exe is at: scripts/SmtcNative/bin/Release/net10.0-windows10.0.19041.0/SmtcNative.exe
+ * The exe is at: scripts/SmtcNative/bin/Release/net<N>.0-windows10.0.19041.0/SmtcNative.exe
+ * (the newest build that can run on an installed .NET runtime).
  * If the exe is missing, startSmtcLoop() will attempt to build it via `dotnet build`.
  */
 
 import { spawn, execFile, type ChildProcess } from 'child_process';
-import { join, dirname } from 'path';
-import { existsSync, appendFileSync } from 'fs';
+import { join } from 'path';
+import { existsSync, readdirSync, readFileSync } from 'fs';
+import { log } from '../log';
 import type { MediaInfo, ControlAction } from '../types';
 
 function smtcLog(msg: string): void {
-  try { appendFileSync(join(__dirname, '..', '..', 'debug.log'), `[${new Date().toISOString()}] [SMTC] ${msg}\n`); } catch { /* noop */ }
+  log(`[SMTC] ${msg}`);
 }
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
@@ -26,46 +32,81 @@ function smtcLog(msg: string): void {
 const SCRIPTS_DIR = join(__dirname, '..', '..', 'scripts');
 const CSPROJ      = join(SCRIPTS_DIR, 'SmtcNative', 'SmtcNative.csproj');
 
-/** Finds the SmtcNative.exe — searches for the release build directory. */
-function findExe(): string | null {
+/** Finds the SmtcNative.exe — newest build whose .NET runtime can run it. */
+export function findExe(): string | null {
   const base = join(SCRIPTS_DIR, 'SmtcNative', 'bin', 'Release');
   if (!existsSync(base)) return null;
 
-  // Look for any net*-windows* subdirectory
-  const { readdirSync } = require('fs') as typeof import('fs');
+  const installed = installedRuntimeMajors();
   try {
-    for (const tfm of readdirSync(base)) {
-      if (!tfm.startsWith('net') || !tfm.includes('windows')) continue;
-      const candidate = join(base, tfm, 'SmtcNative.exe');
-      if (existsSync(candidate)) return candidate;
+    const tfms = readdirSync(base)
+      .map(tfm => ({ tfm, major: Number(/^net(\d+)\.\d+-windows/.exec(tfm)?.[1]) }))
+      .filter(t => !Number.isNaN(t.major))
+      .sort((a, b) => b.major - a.major);
+    for (const { tfm, major } of tfms) {
+      const dir       = join(base, tfm);
+      const candidate = join(dir, 'SmtcNative.exe');
+      if (!existsSync(candidate)) continue;
+      if (installed && !canRun(dir, major, installed)) continue;
+      return candidate;
     }
   } catch { /* ignore */ }
   return null;
 }
 
+/** Same major installed, or a newer one when the build allows rollForward=Major. */
+function canRun(dir: string, major: number, installed: Set<number>): boolean {
+  if (installed.has(major)) return true;
+  try {
+    const cfg = JSON.parse(readFileSync(join(dir, 'SmtcNative.runtimeconfig.json'), 'utf8')) as
+      { runtimeOptions?: { rollForward?: string } };
+    const rf = cfg.runtimeOptions?.rollForward?.toLowerCase();
+    if (rf === 'major' || rf === 'latestmajor') return [...installed].some(m => m > major);
+  } catch { /* sin runtimeconfig → no podemos asumir roll-forward */ }
+  return false;
+}
+
+/** Major versions of Microsoft.NETCore.App installed, or null if unknown. */
+function installedRuntimeMajors(): Set<number> | null {
+  const root = process.env.DOTNET_ROOT ?? join(process.env.ProgramFiles ?? 'C:\\Program Files', 'dotnet');
+  try {
+    const versions = readdirSync(join(root, 'shared', 'Microsoft.NETCore.App'));
+    return new Set(versions.map(v => Number(v.split('.')[0])).filter(n => !Number.isNaN(n)));
+  } catch {
+    return null;
+  }
+}
+
 // ─── Estado interno ───────────────────────────────────────────────────────────
+
+const RETRY_MIN_MS = 3_000;
+const RETRY_MAX_MS = 60_000;
 
 let loopProc:    ChildProcess | null = null;
 let lineBuffer = '';
 let stopped    = false;
 let current:   MediaInfo | null = null;
 let posReadAt  = 0;   // ms UTC de cuando SmtcNative leyó la posición (positionTs del JSON)
+let protocol   = 1;   // versión del protocolo del exe en ejecución
+let thumbnail: string | null = null;   // última portada recibida (v2 solo la manda al cambiar)
+let retryMs    = RETRY_MIN_MS;
+let lastExit   = '';  // último mensaje de salida, para no repetirlo en el log
 
 // ─── Build helper ─────────────────────────────────────────────────────────────
 
 function buildExe(): Promise<void> {
   return new Promise((resolve, reject) => {
-    console.error('[SMTC] Compilando SmtcNative.exe (primera vez, puede tomar unos segundos)...');
+    smtcLog('Compilando SmtcNative.exe (primera vez, puede tomar unos segundos)...');
     const proc = execFile(
       'dotnet',
       ['build', CSPROJ, '-c', 'Release', '--nologo', '-v', 'q'],
       { timeout: 60_000 },
       (err, _stdout, stderr) => {
         if (err) {
-          console.error('[SMTC] Error compilando SmtcNative:', stderr);
+          smtcLog(`Error compilando SmtcNative: ${stderr}`);
           reject(err);
         } else {
-          console.error('[SMTC] SmtcNative.exe compilado correctamente.');
+          smtcLog('SmtcNative.exe compilado correctamente.');
           resolve();
         }
       },
@@ -78,7 +119,7 @@ function buildExe(): Promise<void> {
 
 export function startSmtcLoop(): void {
   stopped = false;
-  launchLoop();
+  void launchLoop();
 }
 
 export function stopSmtcLoop(): void {
@@ -95,18 +136,24 @@ export function getSmtcCurrentMedia(): MediaInfo | null {
   return { ...current, position: pos };
 }
 
+function scheduleRelaunch(): void {
+  if (stopped) return;
+  setTimeout(() => void launchLoop(), retryMs);
+  retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
+}
+
 async function launchLoop(): Promise<void> {
   if (stopped) return;
 
   let exePath = findExe();
-  smtcLog(`launchLoop exePath=${exePath ?? 'null'}`);
 
   if (!exePath) {
     try {
       await buildExe();
       exePath = findExe();
     } catch {
-      smtcLog('No se pudo compilar SmtcNative.exe. Sin datos de media.');
+      smtcLog(`No se pudo compilar SmtcNative.exe. Reintentando en ${retryMs / 1000} s.`);
+      scheduleRelaunch();
       return;
     }
   }
@@ -114,62 +161,94 @@ async function launchLoop(): Promise<void> {
   if (!exePath || stopped) return;
   smtcLog(`spawning ${exePath}`);
 
-  loopProc = spawn(exePath, [], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  protocol   = 1;
+  lineBuffer = '';
+  const startedAt = Date.now();
+  const stderrTail: string[] = [];
 
-  loopProc.stdout?.setEncoding('utf8');
-  loopProc.stdout?.on('data', (chunk: string) => {
+  const proc = spawn(exePath, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  loopProc = proc;
+
+  proc.stdin?.on('error', () => { /* v1 no lee stdin; ignorar EPIPE */ });
+  proc.stdout?.setEncoding('utf8');
+  proc.stdout?.on('data', (chunk: string) => {
     lineBuffer += chunk;
     const lines = lineBuffer.split('\n');
     lineBuffer  = lines.pop() ?? '';
-
-    for (const line of lines) {
-      const raw = line.trim();
-      if (!raw) continue;
-      try {
-        const data = JSON.parse(raw) as Record<string, unknown>;
-        if (data['status'] === 'ok') {
-          // Usar el timestamp del exe (más preciso que Date.now() aquí por el delay del pipe)
-          posReadAt = typeof data['positionTs'] === 'number' ? data['positionTs'] : Date.now();
-          current = {
-            title:           String(data['title']     ?? ''),
-            artist:          String(data['artist']    ?? ''),
-            album:           String(data['album']     ?? ''),
-            thumbnailBase64: typeof data['thumbnail'] === 'string' ? data['thumbnail'] : null,
-            isPlaying:       data['isPlaying'] === true,
-            position:        Number(data['position']  ?? 0),
-            duration:        Number(data['duration']  ?? 0),
-            source:          String(data['source']    ?? ''),
-          };
-        } else if (data['status'] === 'no_media') {
-          current = null;
-        }
-        // 'error' → keep last known state
-      } catch { /* incomplete JSON, ignore */ }
-    }
+    for (const line of lines) handleLine(line.trim());
   });
 
-  loopProc.stderr?.on('data', (chunk: Buffer) => {
-    smtcLog(chunk.toString().trim());
+  proc.stderr?.on('data', (chunk: Buffer) => {
+    const text = chunk.toString().trim();
+    // Mientras está sano, todo va al log; si muere, guardamos el final para un solo resumen
+    stderrTail.push(text);
+    if (stderrTail.length > 20) stderrTail.shift();
+    if (Date.now() - startedAt > 5_000) smtcLog(text);
   });
 
-  loopProc.on('exit', (code) => {
-    loopProc = null;
-    smtcLog(`SmtcNative terminó (código ${String(code)})`);
-    if (!stopped) {
-      setTimeout(() => void launchLoop(), 3_000);
-    }
+  proc.on('exit', (code) => {
+    if (loopProc === proc) loopProc = null;
+    const ranLong = Date.now() - startedAt > 30_000;
+    if (ranLong) retryMs = RETRY_MIN_MS;   // estuvo sano un rato → reintento rápido
+
+    const summary = `SmtcNative terminó (código ${String(code)}): ${stderrTail.join(' | ').slice(0, 2000)}`;
+    // No repetir el mismo error en cada reintento (así se llenó el log a 2.5 GB)
+    if (summary !== lastExit) smtcLog(summary);
+    else smtcLog(`SmtcNative terminó otra vez (mismo error). Reintento en ${retryMs / 1000} s.`);
+    lastExit = summary;
+    scheduleRelaunch();
   });
 
-  loopProc.on('error', (err) => {
+  proc.on('error', (err) => {
     smtcLog(`Error al lanzar SmtcNative.exe: ${err.message}`);
   });
+}
+
+function handleLine(raw: string): void {
+  if (!raw) return;
+  let data: Record<string, unknown>;
+  try { data = JSON.parse(raw) as Record<string, unknown>; } catch { return; }   // JSON incompleto
+
+  const status = data['status'];
+  if (status === 'hello') {
+    protocol = Number(data['protocol'] ?? 1);
+    retryMs  = RETRY_MIN_MS;
+    lastExit = '';
+    smtcLog(`SmtcNative listo (protocolo ${protocol})`);
+  } else if (status === 'ok') {
+    if (protocol < 2) { retryMs = RETRY_MIN_MS; lastExit = ''; }
+    // v1 no manda thumbChanged → la portada viene en cada línea
+    if (data['thumbChanged'] !== false) {
+      thumbnail = typeof data['thumbnail'] === 'string' ? data['thumbnail'] : null;
+    }
+    // Usar el timestamp del exe (más preciso que Date.now() aquí por el delay del pipe)
+    posReadAt = typeof data['positionTs'] === 'number' ? data['positionTs'] : Date.now();
+    current = {
+      title:           String(data['title']     ?? ''),
+      artist:          String(data['artist']    ?? ''),
+      album:           String(data['album']     ?? ''),
+      thumbnailBase64: thumbnail,
+      isPlaying:       data['isPlaying'] === true,
+      position:        Number(data['position']  ?? 0),
+      duration:        Number(data['duration']  ?? 0),
+      source:          String(data['source']    ?? ''),
+    };
+  } else if (status === 'no_media') {
+    current   = null;
+    thumbnail = null;
+  }
+  // 'error' → keep last known state
 }
 
 // ─── Control de reproducción ──────────────────────────────────────────────────
 
 export function smtcControl(action: ControlAction): Promise<void> {
+  // v2: mandar el comando al proceso que ya está corriendo (sin arrancar .NET de nuevo)
+  if (protocol >= 2 && loopProc?.stdin?.writable) {
+    loopProc.stdin.write(`${action}\n`);
+    return Promise.resolve();
+  }
+
   return new Promise<void>((resolve) => {
     const exePath = findExe();
     if (!exePath) { resolve(); return; }

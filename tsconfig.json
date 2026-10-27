@@ -13,5 +13,5 @@
     "sourceMap": false
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "src/actions"]
+  "exclude": ["node_modules"]
 }
